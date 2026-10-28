@@ -1,7 +1,7 @@
 [project]
 name = "switchboard"
 version = "0.1.0"
-description = "Add your description here"
+description = ""Model-agnostic LangGraph agent stack: swap LLMs in one line, tools over MCP, human approval, evals and tracing built in."
 readme = "README.md"
 authors = [
     { name = "baksh07", email = "ghodesawarallhabakash@gmail.com" }
