@@ -255,7 +255,3 @@ No API keys are needed to run the tests.
 - The checkpointer is in-memory, so a paused run is lost when the process exits. A persistent checkpointer comes with the API.
 - The agent gets one write plan per lead. If a model proposes only part of its plan (for example, an update without the follow-up task), the rest is not executed. The upcoming evals will measure how often this happens per model.
 - No evaluation numbers yet. Model comparisons will be added once they are measured.
-
----
-
-Built with help from [Claude Code](https://claude.com/claude-code).
