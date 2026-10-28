@@ -1,7 +1,6 @@
 from datetime import date, timedelta
 from typing import Literal
 
-from httpx2 import query
 from langchain_core.tools import BaseTool, tool
 from sqlalchemy import func, or_, select
 from sqlalchemy.engine import Engine
@@ -10,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from switchboard.usecases.lead_qualification.db import Company, Contact, Task
 
-
+WRITE_TOOLS = {"create_contact", "update_contact", "create_task"}
 
 MOCK_ENRICHMENT = {
     "initech.example": {"name": "Initech", "industry": "Software", "employee_count": 300},
@@ -78,7 +77,7 @@ def make_tools(engine: Engine) -> list[BaseTool]:
                     "name" : company.name,
                     "industry" : company.industry,
                     "employee_count" : company.employee_count,
-                    "contact_deals" : len(company.contacts),
+                    "contact_count" : len(company.contacts),
                     "open_deals" : [
                         {
                             "name" : d.name, "amount" : d.amount
@@ -117,8 +116,13 @@ def make_tools(engine: Engine) -> list[BaseTool]:
                 company_domain = company_domain.strip().lower()
                 company = s.scalar(select(Company).where(Company.domain == company_domain))
                 if company is None:
-                    company = Company(name=company_name or company_domain, domain=company_domain)
-
+                    enriched = MOCK_ENRICHMENT.get(company_domain, {})
+                    company = Company(
+                        name=company_name or enriched.get("name") or company_domain,
+                        domain=company_domain,
+                        industry=enriched.get("industry"),
+                        employee_count=enriched.get("employee_count"),
+                    )
             contact = Contact(name=name, email=email, title=title, company=company)
             s.add(contact)
             s.commit()

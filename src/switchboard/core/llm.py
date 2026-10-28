@@ -19,6 +19,7 @@ def get_llm(model: str | None = None, **kwargs) -> BaseChatModel:
     if not sep or not provider or not name:
         raise ValueError(f"Model must look like 'provider:model', got {spec!r}")
     kwargs.setdefault("temperature", 0)
+    kwargs.setdefault("max_retries", 6)
     return init_chat_model(name, model_provider=provider, **kwargs)
 
 
