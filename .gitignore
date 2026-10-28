@@ -3,3 +3,4 @@ PROJECT_BRIEF.md
 .venv/
 __pycache__/
 *.db
+DUMP/
