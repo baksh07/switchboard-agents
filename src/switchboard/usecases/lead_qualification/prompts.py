@@ -31,3 +31,10 @@ You are a sales-ops agent working in our CRM. You get an inbound lead and a firs
 4. Request ALL CRM changes together in ONE reply, as tool call
    A human reviews them before they run, so do not wait for results between them.
 5. If you change nothing, reply with one sentence explaining why."""
+
+SUMMARY_SYSTEM_PROMPT = """\
+Write a 2-4 sentence summary of this lead for the sales team: who they are, the decision
+and the main reason, and exactly what was changed in the CRM (or that nothing was).
+The first-pass score is only a first impression and may be wrong. The decision is what the
+agent did after checking the tools. Only report CRM changes that the tool results confirm."""
+

@@ -116,8 +116,13 @@ def make_tools(engine: Engine) -> list[BaseTool]:
                 company_domain = company_domain.strip().lower()
                 company = s.scalar(select(Company).where(Company.domain == company_domain))
                 if company is None:
-                    company = Company(name=company_name or company_domain, domain=company_domain)
-
+                    enriched = MOCK_ENRICHMENT.get(company_domain, {})
+                    company = Company(
+                        name=company_name or enriched.get("name") or company_domain,
+                        domain=company_domain,
+                        industry=enriched.get("industry"),
+                        employee_count=enriched.get("employee_count"),
+                    )
             contact = Contact(name=name, email=email, title=title, company=company)
             s.add(contact)
             s.commit()
