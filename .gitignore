@@ -3,3 +3,5 @@ PROJECT_BRIEF.md
 .venv/
 __pycache__/
 *.db
+DUMP/
+.pytest_cache
