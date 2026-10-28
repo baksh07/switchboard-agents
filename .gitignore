@@ -4,3 +4,4 @@ PROJECT_BRIEF.md
 __pycache__/
 *.db
 DUMP/
+.pytest_cache
