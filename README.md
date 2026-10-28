@@ -6,8 +6,8 @@ A switchboard routes connections. Here it routes any model to any tool, with a h
 
 The demo use case is **inbound lead qualification against a mock CRM**: an agent reads a sales lead, checks the facts with CRM and enrichment tools, proposes CRM changes, and waits for a human to approve, reject or edit them before anything is written.
 
-> **Status:** work in progress. The agent, tools, provider switching and human-in-the-loop work and are tested.
-> Tracing, evals, MCP, the REST API, Docker and CI are next (see [Roadmap](#roadmap)).
+> **Status:** work in progress. The agent, tools, provider switching, human-in-the-loop and LangSmith tracing work.
+> Evals, MCP, the REST API, Docker and CI are next (see [Roadmap](#roadmap)).
 
 ---
 
@@ -56,15 +56,20 @@ A real run, from the terminal demo (output shortened):
 
 ```mermaid
 graph TD
-    START([start]) --> extract_and_score
-    extract_and_score --> agent
-    agent -. only reads .-> tools
-    tools --> agent
-    agent -. any write .-> human_review
-    agent -. no tool calls .-> summarize
-    human_review -->|"interrupt(): approve / reject / edit"| execute
-    execute --> summarize
-    summarize --> END([end])
+    subgraph agent_graph ["LangGraph agent (state checkpointed after every node)"]
+        START([Start]) --> extract_and_score
+        extract_and_score --> agent
+        agent -. only reads .-> tools
+        tools --> agent
+        agent -. any write .-> human_review
+        agent -. no tool calls .-> summarize
+        human_review -->|"interrupt(): approve / reject / edit"| execute
+        execute --> summarize
+        summarize --> END([End])
+    end
+    tools <--> crm[("Mock CRM (SQLite)")]
+    execute --> crm
+    agent_graph -. "traces: every node, LLM call and tool call" .-> langsmith[["LangSmith"]]
 ```
 
 | Node | What it does |
@@ -77,6 +82,8 @@ graph TD
 | `summarize` | 2-4 sentence summary for the sales team, given the confirmed CRM changes as facts. |
 
 State is a typed `LeadState` (`TypedDict`). `messages` uses the `add_messages` reducer, and a checkpointer saves the state after every node, which is what makes pausing and resuming possible.
+
+Reads hit the CRM directly through `tools`; writes reach it only through `execute`, after review. When LangSmith is configured, every run is traced automatically, with no tracing code in the graph (see [Tracing](#tracing-langsmith)).
 
 ### Generic core, pluggable use cases
 
@@ -166,6 +173,23 @@ Tested so far: OpenAI `gpt-4o-mini` and Groq `openai/gpt-oss-120b`. Adding a pro
 
 ---
 
+## Tracing (LangSmith)
+
+Every run can be traced in [LangSmith](https://smith.langchain.com): each node, LLM call and tool call, with the exact prompts, outputs, latency and tokens. No tracing code is needed; LangChain and LangGraph pick it up from environment variables. Add to `.env`:
+
+```bash
+LANGSMITH_TRACING=true
+LANGSMITH_API_KEY=lsv2_...
+LANGSMITH_PROJECT=switchboard
+```
+
+> **Gotcha:** `LANGSMITH_TRACING` must be lowercase `true`. LangSmith compares the value with `== "true"`, so `True` or `1` silently turns tracing off: the agent runs normally, but no traces appear and no error is shown.
+> To check your key works: `uv run python -c "from dotenv import load_dotenv; load_dotenv(); from langsmith import Client; print([p.name for p in Client().list_projects()])"`
+
+Runs are named `lead_qualification` and tagged `cli`. A lead that pauses for human review produces **two traces**: one up to `interrupt()`, and one from the `Command(resume=...)` to the end. Both carry the same `thread_id` in their metadata, so LangSmith's **Threads** view shows them together.
+
+---
+
 ## Design decisions
 
 Most of these came from bugs found while running the agent against real models.
@@ -217,7 +241,7 @@ No API keys are needed to run the tests.
 - [x] CRM tools with unit tests (SQLAlchemy, SQLite)
 - [x] Structured output with retry
 - [x] Human-in-the-loop approval with `interrupt()` (approve / reject / edit)
-- [ ] LangSmith tracing
+- [x] LangSmith tracing
 - [ ] Eval harness: accuracy, latency, tokens and cost per model, with a results table
 - [ ] MCP server for the CRM tools (`--tools mcp|local`)
 - [ ] FastAPI: start runs, approve via HTTP, webhook receiver
@@ -231,7 +255,3 @@ No API keys are needed to run the tests.
 - The checkpointer is in-memory, so a paused run is lost when the process exits. A persistent checkpointer comes with the API.
 - The agent gets one write plan per lead. If a model proposes only part of its plan (for example, an update without the follow-up task), the rest is not executed. The upcoming evals will measure how often this happens per model.
 - No evaluation numbers yet. Model comparisons will be added once they are measured.
-
----
-
-Built with help from [Claude Code](https://claude.com/claude-code).

@@ -79,7 +79,14 @@ def main() -> None:
 
     for lead in [args.lead] if args.lead else SAMPLE_LEADS:
         print("=" * 80, f"\nLEAD: {lead}\n")
-        config = {"configurable": {"thread_id": str(uuid4())}}
+        # config = {"configurable": {"thread_id": str(uuid4())}}
+        thread_id = str(uuid4())
+        config = {
+            "configurable": {"thread_id": thread_id},
+            "run_name": "lead_qualification",
+            "tags": ["cli"],
+            "metadata": {"thread_id": thread_id},
+        }
         run_input = {"lead_text": lead}
 
         while True:
