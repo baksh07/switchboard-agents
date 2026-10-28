@@ -1,25 +1,20 @@
 """The lead-qualification agent as a LangGraph StateGraph."""
 
-import argparse
 import json
 from typing import Literal
-from uuid import uuid4
 
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
-from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode
-from sqlalchemy.orm import Session
+from langgraph.types import interrupt
 
-from switchboard.core.llm import get_llm
-from switchboard.usecases.lead_qualification.db import make_engine, seed
 from switchboard.usecases.lead_qualification.prompts import AGENT_SYSTEM_PROMPT, SUMMARY_SYSTEM_PROMPT
-from switchboard.usecases.lead_qualification.scoring import SAMPLE_LEADS, score_lead
+from switchboard.usecases.lead_qualification.scoring import score_lead
 from switchboard.usecases.lead_qualification.state import LeadState
-from switchboard.usecases.lead_qualification.tools import WRITE_TOOLS, make_tools
+from switchboard.usecases.lead_qualification.tools import WRITE_TOOLS
 
 
 def route_after_agent(state: LeadState) -> Literal["tools", "human_review", "summarize"]:
@@ -49,8 +44,17 @@ def build_graph(llm: BaseChatModel, tools: list[BaseTool], checkpointer: BaseChe
         return {"messages": [reply]}
 
     def human_review(state: LeadState) -> dict:
-        # Step 5 replaces this with interrupt(): a person approves, rejects or edits the writes.
-        return {"approved": True}
+        """Pause and show the planned writes; resume with approve, reject, or edit (new tool_calls)."""
+        plan = state["messages"][-1]
+        decision = interrupt({"planned_writes": plan.tool_calls})
+
+        if decision["action"] == "approve":
+            return {"approved": True}
+        if decision["action"] == "edit":
+            # Same id, so add_messages replaces the agent's message instead of appending a new one.
+            edited = AIMessage(content=plan.content, tool_calls=decision["tool_calls"], id=plan.id)
+            return {"approved": True, "messages": [edited]}
+        return {"approved": False}
 
     def execute(state: LeadState) -> dict:
         """Run the approved writes one by one, in order (a task needs its contact to exist first)."""
@@ -73,7 +77,12 @@ def build_graph(llm: BaseChatModel, tools: list[BaseTool], checkpointer: BaseChe
             for m in state["messages"]
             if m.type == "tool" and m.name in WRITE_TOOLS and '"error"' not in m.content
         ]
-        facts = "Confirmed CRM changes:\n" + "\n".join(writes) if writes else "No CRM changes were made."
+        if state.get("approved") is False:
+            facts = "A human reviewer rejected the planned CRM changes, so nothing was written."
+        elif writes:
+            facts = "Confirmed CRM changes:\n" + "\n".join(writes)
+        else:
+            facts = "No CRM changes were made."
         reply = llm.invoke([SystemMessage(SUMMARY_SYSTEM_PROMPT), *state["messages"], HumanMessage(facts)])
         return {"summary": reply.content}
 
@@ -94,33 +103,3 @@ def build_graph(llm: BaseChatModel, tools: list[BaseTool], checkpointer: BaseChe
     graph.add_edge("summarize", END)
 
     return graph.compile(checkpointer=checkpointer)
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run the lead-qualification agent.")
-    parser.add_argument("--model", default=None)
-    parser.add_argument("--lead", default=None, help="Lead text. Default: run the sample leads.")
-    parser.add_argument("--mermaid", action="store_true", help="Print the graph diagram and exit.")
-    args = parser.parse_args()
-
-    engine = make_engine()
-    with Session(engine) as session:
-        seed(session)
-    app = build_graph(get_llm(args.model), make_tools(engine), checkpointer=InMemorySaver())
-
-    if args.mermaid:
-        print(app.get_graph().draw_mermaid())
-        raise SystemExit
-
-    for lead in [args.lead] if args.lead else SAMPLE_LEADS:
-        print("=" * 80, f"\nLEAD: {lead}\n")
-        config = {"configurable": {"thread_id": str(uuid4())}}
-        for update in app.stream({"lead_text": lead}, config, stream_mode="updates"):
-            for node, data in update.items():
-                print(f"--> {node}")
-                for msg in (data or {}).get("messages", []):
-                    for call in getattr(msg, "tool_calls", []):
-                        print(f"    calls {call['name']}({call['args']})")
-                    if msg.type == "tool":
-                        print(f"    result {msg.content[:150]}")
-        print("\nSUMMARY:", app.get_state(config).values["summary"], "\n")
