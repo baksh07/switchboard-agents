@@ -6,7 +6,12 @@ from langgraph.types import Command
 from sqlalchemy.orm import Session
 
 from switchboard.usecases.lead_qualification.db import make_engine, seed
-from switchboard.usecases.lead_qualification.graph import build_graph, route_after_agent
+from switchboard.usecases.lead_qualification.graph import (
+    MAX_WRITE_ROUNDS,
+    build_graph,
+    route_after_agent,
+    route_after_execute,
+)
 from switchboard.usecases.lead_qualification.state import LeadScore
 from switchboard.usecases.lead_qualification.tools import make_tools
 
@@ -43,18 +48,21 @@ class FakeLLM:
         return AIMessage("Test summary.")
 
 
+LOOKUPS = AIMessage("", tool_calls=[
+    call("lookup_company", {"domain": "initech.example"}, "1"),
+    call("search_contacts", {"query": "ada@initech.example"}, "2"),
+])
+CREATE_ADA = call("create_contact", {"name": "Ada Park", "email": "ada@initech.example",
+                                     "company_domain": "initech.example"}, "3")
+TASK_FOR_ADA = call("create_task", {"contact_email": "ada@initech.example", "description": "Intro call"}, "4")
+
+
 def ada_agent_replies():
-    """Agent looks Ada up, then plans: create contact + task."""
+    """Agent looks Ada up, plans contact + task in one batch, then says it is done."""
     return [
-        AIMessage("", tool_calls=[
-            call("lookup_company", {"domain": "initech.example"}, "1"),
-            call("search_contacts", {"query": "ada@initech.example"}, "2"),
-        ]),
-        AIMessage("", tool_calls=[
-            call("create_contact", {"name": "Ada Park", "email": "ada@initech.example",
-                                    "company_domain": "initech.example"}, "3"),
-            call("create_task", {"contact_email": "ada@initech.example", "description": "Intro call"}, "4"),
-        ]),
+        LOOKUPS,
+        AIMessage("", tool_calls=[CREATE_ADA, TASK_FOR_ADA]),
+        AIMessage("Created Ada and a follow-up task."),
     ]
 
 
@@ -143,3 +151,55 @@ def test_rejected_new_lead_writes_nothing(engine):
 
     assert not any(m.type == "tool" for m in result["messages"])
     assert result["summary"] == "Test summary."
+
+
+@pytest.mark.parametrize(
+    "state, expected",
+    [
+        ({"approved": True, "write_rounds": 1}, "agent"),
+        ({"approved": False, "write_rounds": 1}, "summarize"),
+        ({"approved": True, "write_rounds": MAX_WRITE_ROUNDS}, "summarize"),
+    ],
+)
+def test_route_after_execute(state, expected):
+    assert route_after_execute(state) == expected
+
+
+def test_agent_can_add_a_missing_task_in_a_second_reviewed_round(engine):
+    """One-call-per-turn models: create the contact first, then the task after seeing the result."""
+    llm = FakeLLM(make_score(), [
+        LOOKUPS,
+        AIMessage("", tool_calls=[CREATE_ADA]),
+        AIMessage("", tool_calls=[TASK_FOR_ADA]),
+        AIMessage("Created Ada and a follow-up task."),
+    ])
+    tools = {t.name: t for t in make_tools(engine)}
+    app = build_graph(llm, list(tools.values()), checkpointer=InMemorySaver())
+
+    app.invoke({"lead_text": ADA}, CONFIG)
+    reviews = 0
+    while app.get_state(CONFIG).interrupts:
+        reviews += 1
+        app.invoke(Command(resume={"action": "approve"}), CONFIG)
+
+    assert reviews == 2
+    tool_names = [m.name for m in app.get_state(CONFIG).values["messages"] if m.type == "tool"]
+    assert tool_names[-2:] == ["create_contact", "create_task"]
+    assert ada_in_crm(tools)
+
+
+def test_write_rounds_are_capped(engine):
+    """An agent that keeps asking for writes is stopped after MAX_WRITE_ROUNDS reviewed batches."""
+    endless = [AIMessage("", tool_calls=[call("update_contact", {"email": "ada@initech.example",
+                                                                 "title": f"T{i}"}, f"w{i}")])
+               for i in range(MAX_WRITE_ROUNDS + 2)]
+    app = build_graph(FakeLLM(make_score(), endless), make_tools(engine), checkpointer=InMemorySaver())
+
+    app.invoke({"lead_text": ADA}, CONFIG)
+    reviews = 0
+    while app.get_state(CONFIG).interrupts:
+        reviews += 1
+        app.invoke(Command(resume={"action": "approve"}), CONFIG)
+
+    assert reviews == MAX_WRITE_ROUNDS
+    assert app.get_state(CONFIG).values["summary"] == "Test summary."

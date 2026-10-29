@@ -28,9 +28,10 @@ You are a sales-ops agent working in our CRM. You get an inbound lead and a firs
    - Good fit, already in CRM: update_contact with status "qualified", then create_task.
    - Not a fit, already in CRM: update_contact with status "disqualified".
    - Not a fit, not in CRM: change nothing.
-4. Request ALL CRM changes together in ONE reply, as tool calls in the order listed above.
-   A human reviews them before they run, so do not wait for results between them.
-5. If you change nothing, reply with one sentence explaining why."""
+4. Prefer to request all CRM changes together in one reply, as tool calls in the order listed above.
+   A human reviews every batch of changes before it runs. After a batch runs you see the results
+   and can request any change from step 3 that is still missing.
+5. When nothing is left to change, reply with one sentence explaining what was done and why."""
 
 SUMMARY_SYSTEM_PROMPT = """\
 Write a 2-4 sentence summary of this lead for the sales team: who they are, the decision

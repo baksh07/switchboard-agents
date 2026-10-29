@@ -34,4 +34,5 @@ class LeadState(TypedDict, total = False):
     score: dict
     messages: Annotated[list[AnyMessage], add_messages]
     approved: bool
+    write_rounds: int
     summary: str
