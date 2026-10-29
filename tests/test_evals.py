@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from switchboard.core.evals import run_eval, summarize
+from switchboard.core.evals import cost_usd, run_eval, summarize
 from switchboard.usecases.lead_qualification.evaluation import classify_writes
 
 
@@ -55,11 +55,30 @@ def test_run_eval_scores_each_example_and_records_errors():
     assert rows[2]["error"] == "RuntimeError: boom"
 
 
+def row(correct, error=None, latency=1.0, tokens=(100, 10), cost=0.001):
+    return {
+        "model": "m", "scores": {} if error else {"correct": correct}, "error": error,
+        "latency_s": latency, "input_tokens": tokens[0], "output_tokens": tokens[1], "cost_usd": cost,
+    }
+
+
 def test_summarize_counts_errors_as_failures():
-    rows = [
-        {"model": "m", "scores": {"correct": True}, "error": None},
-        {"model": "m", "scores": {"correct": False}, "error": None},
-        {"model": "m", "scores": {}, "error": "RuntimeError: boom"},
-        {"model": "m", "scores": {"correct": True}, "error": None},
-    ]
-    assert summarize(rows) == {"m": {"examples": 4, "correct": 0.5, "errors": 1}}
+    rows = [row(True), row(False), row(None, error="RuntimeError: boom"), row(True)]
+    summary = summarize(rows)["m"]
+    assert summary["correct"] == 0.5
+    assert summary["errors"] == 1
+
+
+def test_summarize_uses_median_latency_and_mean_tokens_and_cost():
+    rows = [row(True, latency=1.0, tokens=(100, 10)), row(True, latency=2.0, tokens=(300, 30)),
+            row(True, latency=60.0, tokens=(200, 20))]
+    summary = summarize(rows)["m"]
+    assert summary["median_latency_s"] == 2.0  # one slow outlier (e.g. a rate-limit wait) doesn't skew it
+    assert summary["avg_tokens_in"] == 200
+    assert summary["avg_tokens_out"] == 20
+    assert summary["cost_per_lead_usd"] == pytest.approx(0.001)
+
+
+def test_cost_uses_price_table_and_is_none_for_unknown_models():
+    assert cost_usd("openai:gpt-4o-mini", 1_000_000, 1_000_000) == pytest.approx(0.75)
+    assert cost_usd("someone:unknown-model", 1000, 1000) is None
