@@ -202,8 +202,10 @@ uv run python -m switchboard.core.evals --models openai:gpt-4o-mini groq:openai/
 
 | model | action correct | full plan correct | errors | median latency / lead | avg tokens in / out | cost / lead |
 |---|---|---|---|---|---|---|
-| `openai:gpt-4o-mini` | 92% (11/12) | 83% (10/12) | 0 | 6.0 s | 2,649 / 258 | $0.00055 |
-| `groq:openai/gpt-oss-120b` | **100% (12/12)** | 42% (5/12) | 0 | 20.2 s* | 3,480 / 1,211 | $0.00125 |
+| `openai:gpt-4o-mini` | 92% (11/12) | 83% (10/12) | 0 | 5.6 s | 2,692 / 263 | $0.00056 |
+| `groq:openai/gpt-oss-120b` | 92% (11/12) | 42% (5/12) | 0 | 26.4 s* | 3,514 / 1,333 | $0.00133 |
+
+<sub>An earlier baseline run used an agent prompt that had been truncated by accident; it was fixed and the baseline re-run. The numbers above are from the corrected prompt.</sub>
 
 - **action correct:** chose the right path: create, update, disqualify, or change nothing.
 - **full plan correct:** right path *and* a follow-up task exactly when one is expected.
@@ -211,11 +213,11 @@ uv run python -m switchboard.core.evals --models openai:gpt-4o-mini groq:openai/
 
 **What the numbers say**
 
-- **gpt-oss-120b made the right decision every time, but never created a follow-up task.** It makes one tool call per turn (update the contact, *then* add the task), while this graph gives the agent a single write turn per lead. The low full-plan score is therefore mostly a **design limitation of this graph**, surfaced by the eval, not only a model weakness. Fixing it and re-measuring is the next step.
-- **gpt-4o-mini plans both writes in one turn**, so it scores higher on full plans. But it made the only wrong decision: it created a 12-employee company as a lead after `lookup_company` had returned the size, which the rules exclude. It also dropped the task once (`mei_existing_fit`).
-- **Same price per token, 2.3× the cost per lead:** gpt-oss is a reasoning model. It produced about 4.7× more output tokens (hidden reasoning is billed as output), and its one-call-per-turn style means more agent turns, each re-sending the conversation.
-- \* **The Groq latency mostly measures the free tier's rate limit**, not the model. One lead uses about 4,000-5,000 tokens and the free tier allows 8,000 tokens per minute, so after the first two leads (6.2 s and 3.6 s) every lead waited for retries. Don't read this as "Groq is slower"; single unthrottled calls were faster on Groq in manual tests.
-- With 12 leads, one flipped case moves a score by 8 points, and repeated runs differed by about that much. Only large gaps (like 100% vs 42%) are meaningful.
+- **gpt-oss-120b never created a follow-up task.** It makes one tool call per turn (update the contact, *then* add the task), while this graph gives the agent a single write turn per lead. The low full-plan score is therefore mostly a **design limitation of this graph**, surfaced by the eval, not only a model weakness. Fixing it and re-measuring is the next step. (Its one wrong decision: it treated Ada's "just exploring, no rush" as not worth a follow-up.)
+- **gpt-4o-mini plans both writes in one turn**, so it scores higher on full plans. But in all three baseline runs it created the 12-employee Pied Piper as a lead after `lookup_company` had returned the size, which the rules exclude. In this run it also added a follow-up task to a contact it had just disqualified.
+- **Same price per token, 2.4× the cost per lead:** gpt-oss is a reasoning model. It produced about 5× more output tokens (hidden reasoning is billed as output), and its one-call-per-turn style means more agent turns, each re-sending the conversation.
+- \* **The Groq latency mostly measures the free tier's rate limit**, not the model. One lead uses about 4,000-5,000 tokens and the free tier allows 8,000 tokens per minute, so after the first two leads (4.3 s and 6.6 s) every lead waited for retries. Don't read this as "Groq is slower"; single unthrottled calls were faster on Groq in manual tests.
+- With 12 leads, one flipped case moves a score by 8 points, and repeated runs differed by about that much. Only large gaps (like 83% vs 42%) are meaningful.
 
 ---
 
