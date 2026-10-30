@@ -1,3 +1,11 @@
+import sys
+from pathlib import Path
+from typing import Literal
+import os
+
+from switchboard.core.mcp import load_mcp_tools
+
+
 from datetime import date, timedelta
 from typing import Literal
 
@@ -189,7 +197,27 @@ def make_tools(engine: Engine) -> list[BaseTool]:
             }
 
     return [search_contacts, lookup_company, create_contact, update_contact, create_task]
-    
 
 
 
+MCP_SERVER = Path(__file__).resolve().parents[4] / "mcp_server" / "crm_server.py"
+
+
+
+def load_tools(engine: Engine, mode: Literal["local", "mcp", "mcp-http"] = "local") -> list[BaseTool]:
+    if mode == "local":
+        return make_tools(engine)
+    if mode == "mcp-http":
+        # The server is already running with its own database; we can only pass a URL, not CRM_DATABASE_URL.
+        url = os.getenv("MCP_URL", "http://127.0.0.1:8000/mcp")
+        return load_mcp_tools({"crm": {"transport": "streamable_http", "url": url}})
+
+    db_url = engine.url.render_as_string(hide_password=False)
+    return load_mcp_tools({
+        "crm" : {
+            "transport" : "stdio",
+            "command" : sys.executable,
+            "args" : [str(MCP_SERVER)],
+            "env" : {"CRM_DATABASE_URL" : db_url},
+        }
+    })

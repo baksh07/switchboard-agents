@@ -77,7 +77,9 @@ def build_graph(llm: BaseChatModel, tools: list[BaseTool], checkpointer: BaseChe
                     output = tools_by_name[call["name"]].invoke(call["args"])
                 except Exception as exc:  # bad arguments etc.: report it instead of crashing the run
                     output = {"error": f"{type(exc).__name__}: {exc}"}
-            results.append(ToolMessage(json.dumps(output), tool_call_id=call["id"], name=call["name"]))
+            # results.append(ToolMessage(json.dumps(output), tool_call_id=call["id"], name=call["name"]))
+            content = output if isinstance(output, str) else json.dumps(output) # MCP tools already return text
+            results.append(ToolMessage(content, tool_call_id=call["id"], name=call["name"]))
         return {"messages": results, "write_rounds": state.get("write_rounds", 0) + 1}
 
     def summarize(state: LeadState) -> dict:
