@@ -6,8 +6,8 @@ A switchboard routes connections. Here it routes any model to any tool, with a h
 
 The demo use case is **inbound lead qualification against a mock CRM**: an agent reads a sales lead, checks the facts with CRM and enrichment tools, proposes CRM changes, and waits for a human to approve, reject or edit them before anything is written.
 
-> **Status:** work in progress. The agent, tools, provider switching, human-in-the-loop, LangSmith tracing, the eval harness ([results](#eval-results)) and the MCP server work.
-> The REST API, Docker and CI are next (see [Roadmap](#roadmap)).
+> **Status:** work in progress. The agent, tools, provider switching, human-in-the-loop, LangSmith tracing, the eval harness ([results](#eval-results)), the MCP server and the REST API with webhooks work.
+> Docker and CI are next (see [Roadmap](#roadmap)).
 
 ---
 
@@ -104,7 +104,8 @@ src/switchboard/
    ├─ prompts.py                 scoring, agent and summary prompts
    ├─ scoring.py                 lead -> LeadScore
    ├─ graph.py                   the StateGraph
-   └─ cli.py                     terminal demo with human approval
+   ├─ cli.py                     terminal demo with human approval
+   └─ api.py                     FastAPI: runs, review decisions, signed webhook
 ```
 
 The rule: **`core/` never imports from a use case.** A second use case adds its own folder (state, tools, prompts, graph) and reuses the core.
@@ -161,6 +162,45 @@ When the agent plans CRM writes, the run pauses:
 | `a` | approve: run the plan as proposed |
 | `r` | reject: write nothing; the summary says a reviewer rejected it |
 | `e` | edit: for each planned call, press Enter to keep it, type `drop` to remove it, or paste new JSON arguments |
+
+---
+
+## REST API
+
+The same agent over HTTP (FastAPI). A run pauses at review **between two requests**: one starts it, another approves it, minutes or days later.
+
+```bash
+uv run uvicorn switchboard.usecases.lead_qualification.api:app
+```
+
+Interactive docs: http://127.0.0.1:8000/docs. Settings come from `.env`: `MODEL`, `TOOLS` (`local`, `mcp` or `mcp-http`), `CHECKPOINT_DB` (default `checkpoints.db`) and `WEBHOOK_SECRET`.
+
+| Endpoint | What it does |
+|---|---|
+| `POST /runs` `{"lead_text": "..."}` | Runs the agent until it needs a review (or finishes). Returns `thread_id`, `status`, `score`, `planned_writes`. |
+| `GET /runs/{thread_id}` | Current status: `running`, `awaiting_review` or `completed` (with `summary`). |
+| `POST /runs/{thread_id}/decision` | `{"action": "approve"}`, `{"action": "reject"}` or `{"action": "edit", "tool_calls": [...]}`. Resumes the run. |
+| `POST /webhooks/lead` | For a form or CRM to push leads (below). |
+| `GET /health` | Liveness check. |
+
+Errors: `404` unknown run, `409` the run is not waiting for a review (e.g. a second approval of the same plan), `422` invalid body.
+
+**Paused runs survive restarts.** The API saves checkpoints to SQLite (`SqliteSaver`), in a file separate from the CRM data: agent state and business data have different lifecycles. A test starts a run, shuts the app down, builds a new one on the same file and approves the run there.
+
+### Webhook
+
+`POST /webhooks/lead` lets a lead source call the agent when a lead arrives, instead of someone starting each run:
+
+```json
+{"event_id": "evt_8f3", "name": "Ada Park", "email": "ada@initech.example", "company": "Initech", "message": "..."}
+```
+
+- **Signed:** the sender puts `X-Signature: sha256=<HMAC-SHA256 of the raw body with WEBHOOK_SECRET>` in the header. A missing or wrong signature gets `401`, and with no `WEBHOOK_SECRET` set the endpoint is disabled (`503`) rather than open.
+- **Answers at once:** `202 Accepted` with `status: "running"`; the agent runs as a background task after the response, so senders with short timeouts don't retry.
+- **Idempotent:** the run's `thread_id` is `webhook-<event_id>`, so a retried delivery of the same event returns the existing run instead of starting a second one.
+- The webhook only **starts** runs. CRM writes still wait for a decision via `/runs/{thread_id}/decision`.
+
+Two endpoint styles on purpose: `def` endpoints run the (blocking) agent in FastAPI's thread pool, so one slow run does not block the server; the webhook is `async def` because it needs the raw body for the signature and does no slow work itself.
 
 ---
 
@@ -312,6 +352,7 @@ uv run pytest
 - **Graph:** routing rules, plus full runs with a scripted fake LLM: the graph pauses *before* any write, and approve, reject and edit each produce the right CRM state.
 - **Eval harness:** scoring, error handling and the cost/latency maths, using a fake use case (proves the harness has no lead-specific code).
 - **MCP:** starts the real server as a subprocess and checks it exposes the same tools and schemas as the local ones, that a write then read works through it, and that both kinds of error (a tool's own error and an argument validation error) come back as text.
+- **API:** every endpoint through FastAPI's `TestClient` with the fake LLM: the run pauses before writing, approve and reject, error codes (404, 409 on a double approval, 422), a paused run surviving an app restart, and the webhook's signature check, background run and duplicate-delivery handling.
 
 No API keys are needed to run the tests. The evals (above) call real models and are run separately.
 
@@ -328,7 +369,7 @@ No API keys are needed to run the tests. The evals (above) call real models and 
 - [x] Eval harness: accuracy, latency, tokens and cost per model, with a results table
 - [ ] Let the agent make follow-up writes after the first approved plan, then re-run the evals
 - [x] MCP server for the CRM tools (`--tools local|mcp|mcp-http`)
-- [ ] FastAPI: start runs, approve via HTTP, webhook receiver
+- [x] FastAPI: start runs, approve via HTTP, signed webhook receiver, persistent checkpoints
 - [ ] Docker Compose
 - [ ] GitHub Actions CI (lint + tests)
 - [ ] Optional: RAG knowledge-base tool, Amazon Bedrock provider
@@ -336,7 +377,9 @@ No API keys are needed to run the tests. The evals (above) call real models and 
 ## Limitations
 
 - The CRM and the company enrichment are mocks with fake `.example` data.
-- The checkpointer is in-memory, so a paused run is lost when the process exits. A persistent checkpointer comes with the API.
+- The CLI's checkpointer is in-memory (a terminal session lasts as long as its runs); the API persists checkpoints in SQLite. With several API servers, checkpoints would need a shared database such as Postgres (`PostgresSaver`).
+- Webhook runs are FastAPI background tasks, not a job queue: a run that crashes (e.g. the LLM provider is down) stays `running` and is not retried, and runs in progress are lost on restart. Two deliveries of the same event arriving at the same instant could both start a run, because the duplicate check happens before the first checkpoint is saved. A queue with retries and an atomic "claim this event id" would fix both.
+- The API has no user authentication; anyone who can reach it can approve plans. Only the webhook is protected (by its signature).
 - The agent gets one write plan per lead. If a model proposes only part of its plan (for example, an update without the follow-up task), the rest is not executed. The evals show this costs gpt-oss-120b most of its full-plan score.
 - The eval set is small (12 leads) and each model was run once, so results carry noticeable run-to-run variation.
 - Groq results were measured on the free tier, whose rate limit inflates latency.
