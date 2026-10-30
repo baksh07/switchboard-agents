@@ -6,8 +6,8 @@ A switchboard routes connections. Here it routes any model to any tool, with a h
 
 The demo use case is **inbound lead qualification against a mock CRM**: an agent reads a sales lead, checks the facts with CRM and enrichment tools, proposes CRM changes, and waits for a human to approve, reject or edit them before anything is written.
 
-> **Status:** work in progress. The agent, tools, provider switching, human-in-the-loop, LangSmith tracing, the eval harness ([results](#eval-results)), the MCP server and the REST API with webhooks work.
-> Docker and CI are next (see [Roadmap](#roadmap)).
+> **Status:** work in progress. The agent, tools, provider switching, human-in-the-loop, LangSmith tracing, the eval harness ([results](#eval-results)), the MCP server, the REST API with webhooks and the Docker Compose setup work.
+> CI is next (see [Roadmap](#roadmap)).
 
 ---
 
@@ -114,7 +114,7 @@ The rule: **`core/` never imports from a use case.** A second use case adds its 
 
 ## Quickstart
 
-Requirements: Python 3.11+ and [uv](https://docs.astral.sh/uv/).
+Requirements: Python 3.11+ and [uv](https://docs.astral.sh/uv/). Or only Docker: see [Running with Docker](#running-with-docker).
 
 ```bash
 git clone https://github.com/baksh07/switchboard-agents.git
@@ -201,6 +201,42 @@ Errors: `404` unknown run, `409` the run is not waiting for a review (e.g. a sec
 - The webhook only **starts** runs. CRM writes still wait for a decision via `/runs/{thread_id}/decision`.
 
 Two endpoint styles on purpose: `def` endpoints run the (blocking) agent in FastAPI's thread pool, so one slow run does not block the server; the webhook is `async def` because it needs the raw body for the signature and does no slow work itself.
+
+---
+
+## Running with Docker
+
+```bash
+docker compose up --build
+```
+
+The API is then at http://127.0.0.1:8001/docs. Compose runs two containers from one image:
+
+```mermaid
+graph LR
+    you([Your machine]) -->|"localhost:8001"| api
+    subgraph compose ["Compose network (private)"]
+        api["api<br/>FastAPI + agent"] -->|"MCP over HTTP<br/>http://mcp:8000/mcp"| mcp["mcp<br/>CRM tool server"]
+        api --- data[("volume: data<br/>crm.db, checkpoints.db")]
+        mcp --- data
+    end
+```
+
+| Service | Runs | Reachable from |
+|---|---|---|
+| `api` | uvicorn with the FastAPI app, `TOOLS=mcp-http` | your machine, port 8001 |
+| `mcp` | `crm_server.py http` | only the `api` container (no published port) |
+
+- **The tool server is not exposed.** It has no authentication and can write to the CRM, so only the API, on the private Compose network, can reach it.
+- **Data survives restarts.** Both containers mount the named volume `data` at `/data`: they share one `crm.db`, and paused runs in `checkpoints.db` survive `docker compose down` / `up`. `docker compose down -v` deletes the volume.
+- **Startup order is checked, not assumed.** The API loads its tools from the MCP server at startup, so it waits for the `mcp` healthcheck to pass (`depends_on: condition: service_healthy`), not just for the container to start.
+- **No secrets in the image.** API keys come from `.env` at run time (`env_file`); `.dockerignore` keeps `.env`, the databases and the local virtualenv out of the build.
+
+The [`Dockerfile`](Dockerfile) installs dependencies with `uv sync --frozen` from `uv.lock`, in a separate layer from the source code, so code changes rebuild in seconds. The app runs as a non-root user that can write only to `/data`.
+
+**Two bugs that only appeared in containers:**
+- **`asyncio.run()` cannot be called from a running event loop.** The MCP tool loader is synchronous and uses `asyncio.run`. Locally the API used in-process tools, so startup never reached it; in Compose (`TOOLS=mcp-http`) it ran inside FastAPI's async `lifespan`. The graph is now built in a worker thread (`asyncio.to_thread`).
+- **`421 Misdirected Request` from the MCP server.** Created with host `127.0.0.1`, FastMCP enables DNS-rebinding protection and accepts only `localhost` Host headers, but the API calls it as `mcp:8000`. The host must be passed when the server is created (`MCP_HOST=0.0.0.0` in Compose), not changed afterwards.
 
 ---
 
@@ -370,7 +406,7 @@ No API keys are needed to run the tests. The evals (above) call real models and 
 - [ ] Let the agent make follow-up writes after the first approved plan, then re-run the evals
 - [x] MCP server for the CRM tools (`--tools local|mcp|mcp-http`)
 - [x] FastAPI: start runs, approve via HTTP, signed webhook receiver, persistent checkpoints
-- [ ] Docker Compose
+- [x] Docker Compose: API and MCP tool server as separate containers, shared volume, healthchecks
 - [ ] GitHub Actions CI (lint + tests)
 - [ ] Optional: RAG knowledge-base tool, Amazon Bedrock provider
 
