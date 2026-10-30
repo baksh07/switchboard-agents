@@ -1,4 +1,5 @@
 import os
+import asyncio
 import sqlite3
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -133,7 +134,7 @@ def make_checkpointer(path: str) -> SqliteSaver:
     return SqliteSaver(conn)
 
 def _default_graph():
-    engine = make_engine(f"sqlite:///{Path('crm.db').resolve()}")
+    engine = make_engine(os.getenv("CRM_DATABASE_URL", f"sqlite:///{Path('crm.db').resolve()}"))
     with Session(engine) as session:
         seed(session)
     tools = load_tools(engine, os.getenv("TOOLS", "local"))
@@ -143,7 +144,7 @@ def _default_graph():
 def create_app(graph=None, webhook_secret: str | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        app.state.graph = graph or _default_graph()
+        app.state.graph = graph or await asyncio.to_thread(_default_graph)
         app.state.webhook_secret = webhook_secret or os.getenv("WEBHOOK_SECRET")
         yield
 
