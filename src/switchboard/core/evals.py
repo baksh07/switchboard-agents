@@ -1,7 +1,7 @@
 """Generic eval harness: run any use case's dataset against several models and score every example.
 
 A use case plugs in by providing `switchboard/usecases/<name>/evaluation.py` with:
-    run_example(llm, example, config) -> outcome dict
+    run_example(llm, example, config, tools) -> outcome dict   (tools: "local" or "mcp")
     score(example, outcome) -> {metric_name: bool}
 and a dataset at `evals/datasets/<name>.jsonl` (one JSON object per line with an "id").
 """
@@ -46,7 +46,9 @@ def cost_usd(model: str, input_tokens: int, output_tokens: int) -> float | None:
     return (input_tokens * price_in + output_tokens * price_out) / 1_000_000
 
 
-def run_eval(usecase: ModuleType, name: str, examples: list[dict], models: list[str]) -> list[dict]:
+def run_eval(
+    usecase: ModuleType, name: str, examples: list[dict], models: list[str], tools: str = "local"
+) -> list[dict]:
     """Run every example on every model. A crash in one example is recorded as an error, not raised."""
     rows = []
     for model in models:
@@ -56,13 +58,13 @@ def run_eval(usecase: ModuleType, name: str, examples: list[dict], models: list[
             config = {
                 "configurable": {"thread_id": str(uuid4())},
                 "run_name": f"eval:{name}",
-                "tags": ["eval", model],
-                "metadata": {"example_id": example["id"], "model": model},
+                "tags": ["eval", model, f"tools:{tools}"],
+                "metadata": {"example_id": example["id"], "model": model, "tools": tools},
                 "callbacks": [usage],
             }
             start = time.perf_counter()
             try:
-                outcome = usecase.run_example(llm, example, config)
+                outcome = usecase.run_example(llm, example, config, tools=tools)
                 scores, error = usecase.score(example, outcome), None
             except Exception as exc:
                 outcome, scores, error = {}, {}, f"{type(exc).__name__}: {exc}"
@@ -132,11 +134,12 @@ def main() -> None:
     parser.add_argument("--models", nargs="+", required=True, help='e.g. openai:gpt-4o-mini groq:openai/gpt-oss-120b')
     parser.add_argument("--dataset", type=Path, default=None, help="Default: evals/datasets/<usecase>.jsonl")
     parser.add_argument("--out", type=Path, default=None, help="Write every row (with outcomes) to this JSONL file.")
+    parser.add_argument("--tools", choices=["local", "mcp"], default="local", help="Call tools in-process or via MCP.")
     args = parser.parse_args()
 
     usecase = importlib.import_module(f"switchboard.usecases.{args.usecase}.evaluation")
     examples = load_dataset(args.dataset or DATASETS_DIR / f"{args.usecase}.jsonl")
-    rows = run_eval(usecase, args.usecase, examples, args.models)
+    rows = run_eval(usecase, args.usecase, examples, args.models, tools=args.tools)
 
     if args.out:
         args.out.parent.mkdir(parents=True, exist_ok=True)

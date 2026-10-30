@@ -33,7 +33,7 @@ def fake_keys(monkeypatch):
 def fake_usecase(results):
     """A use case whose run_example returns scripted outcomes (or raises) by example id."""
 
-    def run_example(llm, example, config):
+    def run_example(llm, example, config, tools="local"):
         result = results[example["id"]]
         if isinstance(result, Exception):
             raise result

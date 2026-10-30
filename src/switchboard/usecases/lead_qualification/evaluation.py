@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from switchboard.usecases.lead_qualification.db import make_engine, seed
 from switchboard.usecases.lead_qualification.graph import build_graph
-from switchboard.usecases.lead_qualification.tools import make_tools
+from switchboard.usecases.lead_qualification.tools import load_tools
 
 
 def classify_writes(writes: list[dict]) -> dict:
@@ -28,13 +28,13 @@ def classify_writes(writes: list[dict]) -> dict:
     return {"action": action, "task": "create_task" in names}
 
 
-def run_example(llm: BaseChatModel, example: dict, config: dict) -> dict:
+def run_example(llm: BaseChatModel, example: dict, config: dict, tools: str = "local") -> dict:
     """Run one lead on a fresh seeded CRM, auto-approving every plan; return what the agent planned."""
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         engine = make_engine(f"sqlite:///{Path(tmp) / 'crm.db'}")
         with Session(engine) as session:
             seed(session)
-        app = build_graph(llm, make_tools(engine), checkpointer=InMemorySaver())
+        app = build_graph(llm, load_tools(engine, tools), checkpointer=InMemorySaver())
 
         planned = []
         app.invoke(example["input"], config)
