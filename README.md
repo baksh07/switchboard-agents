@@ -6,8 +6,8 @@ A switchboard routes connections. Here it routes any model to any tool, with a h
 
 The demo use case is **inbound lead qualification against a mock CRM**: an agent reads a sales lead, checks the facts with CRM and enrichment tools, proposes CRM changes, and waits for a human to approve, reject or edit them before anything is written.
 
-> **Status:** work in progress. The agent, tools, provider switching, human-in-the-loop and LangSmith tracing work.
-> Evals, MCP, the REST API, Docker and CI are next (see [Roadmap](#roadmap)).
+> **Status:** work in progress. The agent, tools, provider switching, human-in-the-loop, LangSmith tracing, the eval harness ([results](#eval-results)) and the MCP server work.
+> The REST API, Docker and CI are next (see [Roadmap](#roadmap)).
 
 ---
 
@@ -64,11 +64,12 @@ graph TD
         agent -. any write .-> human_review
         agent -. no tool calls .-> summarize
         human_review -->|"interrupt(): approve / reject / edit"| execute
-        execute --> summarize
+        execute -. approved, more writes allowed .-> agent
+        execute -. rejected or 3 write rounds .-> summarize
         summarize --> END([End])
     end
-    tools <--> crm[("Mock CRM (SQLite)")]
-    execute --> crm
+    tools <-->|"in-process or MCP"| crm[("Mock CRM (SQLite)")]
+    execute -->|"in-process or MCP"| crm
     agent_graph -. "traces: every node, LLM call and tool call" .-> langsmith[["LangSmith"]]
 ```
 
@@ -88,13 +89,17 @@ Reads hit the CRM directly through `tools`; writes reach it only through `execut
 ### Generic core, pluggable use cases
 
 ```
+mcp_server/
+└─ crm_server.py                 the 5 CRM tools as an MCP server (stdio or HTTP)
 src/switchboard/
 ├─ core/                         reusable, no provider- or use-case-specific code
 │  ├─ llm.py                     get_llm("provider:model")
-│  └─ structured.py              structured output with retry and clean failure
+│  ├─ structured.py              structured output with retry and clean failure
+│  ├─ mcp.py                     load tools from any MCP server as normal LangChain tools
+│  └─ evals.py                   generic eval harness (accuracy, latency, tokens, cost)
 └─ usecases/lead_qualification/  the demo use case
    ├─ db.py                      SQLAlchemy models + seed data for the mock CRM
-   ├─ tools.py                   5 CRM tools, built by make_tools(engine)
+   ├─ tools.py                   5 CRM tools: make_tools(engine), load_tools(engine, "local"|"mcp"|"mcp-http")
    ├─ state.py                   LeadScore (Pydantic) and LeadState (graph state)
    ├─ prompts.py                 scoring, agent and summary prompts
    ├─ scoring.py                 lead -> LeadScore
@@ -140,6 +145,9 @@ uv run python -m switchboard.usecases.lead_qualification.cli --auto-approve
 
 # print the graph as a Mermaid diagram
 uv run python -m switchboard.usecases.lead_qualification.cli --mermaid
+
+# call the CRM tools through the MCP server instead of in-process (see MCP below)
+uv run python -m switchboard.usecases.lead_qualification.cli --tools mcp
 ```
 
 The mock CRM lives in `crm.db` (SQLite) and is created and seeded on first run. Delete the file to reset it.
@@ -190,6 +198,79 @@ Runs are named `lead_qualification` and tagged `cli`. A lead that pauses for hum
 
 ---
 
+## CRM tools over MCP
+
+[`mcp_server/crm_server.py`](mcp_server/crm_server.py) publishes the same 5 CRM tools as a [Model Context Protocol](https://modelcontextprotocol.io) server. Any MCP client can discover and call them: this project's agent, Claude Desktop, Claude Code or another framework, with no extra integration code. The server wraps the existing `make_tools(engine)` with `to_fastmcp`, so there is one implementation of each tool, not two.
+
+The agent picks how it reaches the tools with `--tools`; the graph does not change:
+
+| Mode | How | Per tool call* | Use it for |
+|---|---|---|---|
+| `local` (default) | Python function calls in the same process | milliseconds | development, tests |
+| `mcp` | the agent starts the server as a subprocess and talks over stdio | ~2.9 s | evals: each run can point the server at its own database via `CRM_DATABASE_URL` |
+| `mcp-http` | connects to a server you started once | ~0.05 s | a shared, long-running tool service |
+
+<sub>* Measured on one Windows laptop with `search_contacts`, average of 5 calls.</sub>
+
+```bash
+# mcp-http: start the server once (from the repo root, so it opens the same crm.db) ...
+uv run python mcp_server/crm_server.py http
+# ... then, in another terminal
+uv run python -m switchboard.usecases.lead_qualification.cli --tools mcp-http
+```
+
+**Why stdio is slow:** the client (`langchain-mcp-adapters`) opens a new session per tool call, and for stdio a session is a new Python process: start the interpreter, import SQLAlchemy and LangChain, MCP handshake, one call, exit. The query itself takes milliseconds. Over HTTP the process already runs, so only the HTTP round trip remains.
+
+**Why the evals still use stdio:** each eval lead needs a fresh database. A client-started server can be given its database per run; an already-running server has one fixed database that every lead would write into. Isolation and configurability vs. speed.
+
+**Same answers, more time.** gpt-4o-mini on the 12-lead eval, both runs on 2026-10-30 with the same code and prompt (raw rows: [`mcp_local.jsonl`](evals/results/mcp_local.jsonl), [`mcp_stdio.jsonl`](evals/results/mcp_stdio.jsonl)):
+
+| tools | action correct | full plan correct | errors | median latency / lead | avg tokens in / out | cost / lead |
+|---|---|---|---|---|---|---|
+| `local` | 92% (11/12) | 92% (11/12) | 0 | 6.4 s | 4,029 / 293 | $0.00078 |
+| `mcp` (stdio) | 92% (11/12) | 92% (11/12) | 0 | 15.5 s | 3,871 / 283 | $0.00075 |
+
+The same lead failed in both runs (Pied Piper, see below), so the model sees the same tools and schemas through MCP; a test checks this directly. The extra ~9 s per lead is process startup on every tool call.
+
+**Things to know**
+
+- **Human approval lives in the graph, not in the server.** When this agent uses MCP, writes still pause for review. A different client calling `create_contact` on the server directly bypasses that review, so a real deployment would need authentication and permission checks in the server itself. The HTTP mode binds to `127.0.0.1` for this reason.
+- **MCP returns text, not Python objects.** Tool results arrive as JSON strings, so `execute` only JSON-encodes results that are not strings already.
+- **Debugging stdio servers:** if the server crashes on startup, the client only reports `McpError: Connection closed`. Run `uv run python mcp_server/crm_server.py` directly to see the real traceback (it should just wait for input).
+
+---
+
+## Eval results
+
+The eval harness (`core/evals.py`) runs every lead in [`evals/datasets/lead_qualification.jsonl`](evals/datasets/lead_qualification.jsonl) through the full agent on a fresh seeded CRM, auto-approves the plan, and grades the **planned CRM writes** against the expected answer.
+
+```bash
+uv run python -m switchboard.core.evals --models openai:gpt-4o-mini groq:openai/gpt-oss-120b --out evals/results/baseline.jsonl
+```
+
+**Baseline, 2026-10-29, n = 12 leads, one run per model** (raw rows: [`evals/results/baseline.jsonl`](evals/results/baseline.jsonl)):
+
+| model | action correct | full plan correct | errors | median latency / lead | avg tokens in / out | cost / lead |
+|---|---|---|---|---|---|---|
+| `openai:gpt-4o-mini` | 92% (11/12) | 83% (10/12) | 0 | 5.6 s | 2,692 / 263 | $0.00056 |
+| `groq:openai/gpt-oss-120b` | 92% (11/12) | 42% (5/12) | 0 | 26.4 s* | 3,514 / 1,333 | $0.00133 |
+
+<sub>An earlier baseline run used an agent prompt that had been truncated by accident; it was fixed and the baseline re-run. The numbers above are from the corrected prompt.</sub>
+
+- **action correct:** chose the right path: create, update, disqualify, or change nothing.
+- **full plan correct:** right path *and* a follow-up task exactly when one is expected.
+- Cost uses list prices checked on 2026-10-29: both models cost $0.15 / $0.60 per 1M input / output tokens.
+
+**What the numbers say**
+
+- **gpt-oss-120b never created a follow-up task.** It makes one tool call per turn (update the contact, *then* add the task), while this graph gives the agent a single write turn per lead. The low full-plan score is therefore mostly a **design limitation of this graph**, surfaced by the eval, not only a model weakness. Fixing it and re-measuring is the next step. (Its one wrong decision: it treated Ada's "just exploring, no rush" as not worth a follow-up.)
+- **gpt-4o-mini plans both writes in one turn**, so it scores higher on full plans. But in all three baseline runs it created the 12-employee Pied Piper as a lead after `lookup_company` had returned the size, which the rules exclude. In this run it also added a follow-up task to a contact it had just disqualified.
+- **Same price per token, 2.4× the cost per lead:** gpt-oss is a reasoning model. It produced about 5× more output tokens (hidden reasoning is billed as output), and its one-call-per-turn style means more agent turns, each re-sending the conversation.
+- \* **The Groq latency mostly measures the free tier's rate limit**, not the model. One lead uses about 4,000-5,000 tokens and the free tier allows 8,000 tokens per minute, so after the first two leads (4.3 s and 6.6 s) every lead waited for retries. Don't read this as "Groq is slower"; single unthrottled calls were faster on Groq in manual tests.
+- With 12 leads, one flipped case moves a score by 8 points, and repeated runs differed by about that much. Only large gaps (like 83% vs 42%) are meaningful.
+
+---
+
 ## Design decisions
 
 Most of these came from bugs found while running the agent against real models.
@@ -229,8 +310,10 @@ uv run pytest
 - **LLM factory:** provider selection, defaults and input validation (no network calls).
 - **Structured output:** first-try success, retry with the error shown to the model, clean failure.
 - **Graph:** routing rules, plus full runs with a scripted fake LLM: the graph pauses *before* any write, and approve, reject and edit each produce the right CRM state.
+- **Eval harness:** scoring, error handling and the cost/latency maths, using a fake use case (proves the harness has no lead-specific code).
+- **MCP:** starts the real server as a subprocess and checks it exposes the same tools and schemas as the local ones, that a write then read works through it, and that both kinds of error (a tool's own error and an argument validation error) come back as text.
 
-No API keys are needed to run the tests.
+No API keys are needed to run the tests. The evals (above) call real models and are run separately.
 
 ---
 
@@ -242,8 +325,9 @@ No API keys are needed to run the tests.
 - [x] Structured output with retry
 - [x] Human-in-the-loop approval with `interrupt()` (approve / reject / edit)
 - [x] LangSmith tracing
-- [ ] Eval harness: accuracy, latency, tokens and cost per model, with a results table
-- [ ] MCP server for the CRM tools (`--tools mcp|local`)
+- [x] Eval harness: accuracy, latency, tokens and cost per model, with a results table
+- [ ] Let the agent make follow-up writes after the first approved plan, then re-run the evals
+- [x] MCP server for the CRM tools (`--tools local|mcp|mcp-http`)
 - [ ] FastAPI: start runs, approve via HTTP, webhook receiver
 - [ ] Docker Compose
 - [ ] GitHub Actions CI (lint + tests)
@@ -253,5 +337,6 @@ No API keys are needed to run the tests.
 
 - The CRM and the company enrichment are mocks with fake `.example` data.
 - The checkpointer is in-memory, so a paused run is lost when the process exits. A persistent checkpointer comes with the API.
-- The agent gets one write plan per lead. If a model proposes only part of its plan (for example, an update without the follow-up task), the rest is not executed. The upcoming evals will measure how often this happens per model.
-- No evaluation numbers yet. Model comparisons will be added once they are measured.
+- The agent gets one write plan per lead. If a model proposes only part of its plan (for example, an update without the follow-up task), the rest is not executed. The evals show this costs gpt-oss-120b most of its full-plan score.
+- The eval set is small (12 leads) and each model was run once, so results carry noticeable run-to-run variation.
+- Groq results were measured on the free tier, whose rate limit inflates latency.

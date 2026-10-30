@@ -27,6 +27,16 @@ def route_after_agent(state: LeadState) -> Literal["tools", "human_review", "sum
     return "tools"
 
 
+MAX_WRITE_ROUNDS = 3
+
+
+def route_after_execute(state: LeadState) -> Literal["agent", "summarize"]:
+    """After writes: let the agent add missing follow-ups, unless the reviewer said no or we hit the cap."""
+    if not state.get("approved") or state.get("write_rounds", 0) >= MAX_WRITE_ROUNDS:
+        return "summarize"
+    return "agent"
+
+
 def build_graph(llm: BaseChatModel, tools: list[BaseTool], checkpointer: BaseCheckpointSaver | None = None):
     agent_llm = llm.bind_tools(tools)
     tools_by_name = {t.name: t for t in tools}
@@ -67,8 +77,10 @@ def build_graph(llm: BaseChatModel, tools: list[BaseTool], checkpointer: BaseChe
                     output = tools_by_name[call["name"]].invoke(call["args"])
                 except Exception as exc:  # bad arguments etc.: report it instead of crashing the run
                     output = {"error": f"{type(exc).__name__}: {exc}"}
-            results.append(ToolMessage(json.dumps(output), tool_call_id=call["id"], name=call["name"]))
-        return {"messages": results}
+            # results.append(ToolMessage(json.dumps(output), tool_call_id=call["id"], name=call["name"]))
+            content = output if isinstance(output, str) else json.dumps(output) # MCP tools already return text
+            results.append(ToolMessage(content, tool_call_id=call["id"], name=call["name"]))
+        return {"messages": results, "write_rounds": state.get("write_rounds", 0) + 1}
 
     def summarize(state: LeadState) -> dict:
         # Tell the model exactly which writes succeeded, so it can't claim changes that never happened.
@@ -77,12 +89,9 @@ def build_graph(llm: BaseChatModel, tools: list[BaseTool], checkpointer: BaseChe
             for m in state["messages"]
             if m.type == "tool" and m.name in WRITE_TOOLS and '"error"' not in m.content
         ]
+        facts = "Confirmed CRM changes:\n" + "\n".join(writes) if writes else "No CRM changes were made."
         if state.get("approved") is False:
-            facts = "A human reviewer rejected the planned CRM changes, so nothing was written."
-        elif writes:
-            facts = "Confirmed CRM changes:\n" + "\n".join(writes)
-        else:
-            facts = "No CRM changes were made."
+            facts += "\nA human reviewer rejected the last planned changes, so those were not written."
         reply = llm.invoke([SystemMessage(SUMMARY_SYSTEM_PROMPT), *state["messages"], HumanMessage(facts)])
         return {"summary": reply.content}
 
@@ -99,7 +108,7 @@ def build_graph(llm: BaseChatModel, tools: list[BaseTool], checkpointer: BaseChe
     graph.add_conditional_edges("agent", route_after_agent)
     graph.add_edge("tools", "agent")
     graph.add_edge("human_review", "execute")
-    graph.add_edge("execute", "summarize")
+    graph.add_conditional_edges("execute", route_after_execute)
     graph.add_edge("summarize", END)
 
     return graph.compile(checkpointer=checkpointer)

@@ -3,6 +3,8 @@
 import argparse
 import json
 from uuid import uuid4
+from pathlib import Path
+
 
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
@@ -12,7 +14,7 @@ from switchboard.core.llm import get_llm
 from switchboard.usecases.lead_qualification.db import make_engine, seed
 from switchboard.usecases.lead_qualification.graph import build_graph
 from switchboard.usecases.lead_qualification.scoring import SAMPLE_LEADS
-from switchboard.usecases.lead_qualification.tools import make_tools
+from switchboard.usecases.lead_qualification.tools import load_tools
 
 
 def print_update(update: dict) -> None:
@@ -66,12 +68,14 @@ def main() -> None:
     parser.add_argument("--lead", default=None, help="Lead text. Default: run the sample leads.")
     parser.add_argument("--auto-approve", action="store_true", help="Approve every plan without asking.")
     parser.add_argument("--mermaid", action="store_true", help="Print the graph diagram and exit.")
+    parser.add_argument("--tools", choices=["local", "mcp", "mcp-http"], default="local",
+                        help="local: call the tools in-process; mcp: call them through the MCP server.")
     args = parser.parse_args()
 
-    engine = make_engine()
+    engine = make_engine(f"sqlite:///{Path('crm.db').resolve()}")
     with Session(engine) as session:
         seed(session)
-    app = build_graph(get_llm(args.model), make_tools(engine), checkpointer=InMemorySaver())
+    app = build_graph(get_llm(args.model), load_tools(engine, mode=args.tools), checkpointer=InMemorySaver())
 
     if args.mermaid:
         print(app.get_graph().draw_mermaid())
@@ -84,7 +88,7 @@ def main() -> None:
         config = {
             "configurable": {"thread_id": thread_id},
             "run_name": "lead_qualification",
-            "tags": ["cli"],
+            "tags": ["cli", f"tools:{args.tools}"],
             "metadata": {"thread_id": thread_id},
         }
         run_input = {"lead_text": lead}
