@@ -2,16 +2,14 @@ import argparse
 import os
 import time
 
-
 from dotenv import load_dotenv
 from langchain.chat_models import init_chat_model
 from langchain_core.language_models import BaseChatModel
 
-
-
 load_dotenv()
 
 DEFAULT_MODEL = "openai:gpt-4o-mini"
+
 
 def get_llm(model: str | None = None, **kwargs) -> BaseChatModel:
     spec = model or os.getenv("MODEL") or DEFAULT_MODEL

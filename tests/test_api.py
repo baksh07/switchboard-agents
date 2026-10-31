@@ -1,4 +1,5 @@
 """The REST API, with the scripted fake LLM: no API keys, no network."""
+
 import hashlib
 import hmac
 import json
@@ -7,12 +8,12 @@ import pytest
 from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage
 from sqlalchemy.orm import Session
+from test_graph import FakeLLM, ada_agent_replies, make_score
 
 from switchboard.usecases.lead_qualification.api import create_app, make_checkpointer
 from switchboard.usecases.lead_qualification.db import make_engine, seed
 from switchboard.usecases.lead_qualification.graph import build_graph
 from switchboard.usecases.lead_qualification.tools import make_tools
-from test_graph import FakeLLM, ada_agent_replies, make_score
 
 DONE = AIMessage("Created Ada and a follow-up task.")
 
@@ -84,21 +85,30 @@ def test_paused_run_survives_a_restart(tools, tmp_path):
 
 
 SECRET = "test-secret"
-WEBHOOK = {"event_id": "evt_1", "name": "Ada Park", "email": "ada@initech.example",
-           "company": "Initech", "message": "We want to automate our lead routing."}
+WEBHOOK = {
+    "event_id": "evt_1",
+    "name": "Ada Park",
+    "email": "ada@initech.example",
+    "company": "Initech",
+    "message": "We want to automate our lead routing.",
+}
 
 
 def post_webhook(client, payload=WEBHOOK, secret=SECRET):
     body = json.dumps(payload).encode()
     signature = "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
-    return client.post("/webhooks/lead", content=body,
-                       headers={"Content-Type": "application/json", "X-Signature": signature})
+    return client.post(
+        "/webhooks/lead", content=body, headers={"Content-Type": "application/json", "X-Signature": signature}
+    )
 
 
 @pytest.fixture
 def webhook_client(tools, tmp_path):
-    graph = build_graph(FakeLLM(make_score(), ada_agent_replies()), list(tools.values()),
-                        make_checkpointer(str(tmp_path / "checkpoints.db")))
+    graph = build_graph(
+        FakeLLM(make_score(), ada_agent_replies()),
+        list(tools.values()),
+        make_checkpointer(str(tmp_path / "checkpoints.db")),
+    )
     with TestClient(create_app(graph, webhook_secret=SECRET)) as c:
         yield c
 

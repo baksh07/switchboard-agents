@@ -17,6 +17,7 @@ def _as_sync(tool: BaseTool) -> BaseTool:
         func=call, name=tool.name, description=tool.description, args_schema=tool.args_schema
     )
 
-def load_mcp_tools(connections: dict)-> list[BaseTool]:
+
+def load_mcp_tools(connections: dict) -> list[BaseTool]:
     client = MultiServerMCPClient(connections=connections)
     return [_as_sync(t) for t in asyncio.run(client.get_tools())]

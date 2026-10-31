@@ -2,8 +2,8 @@ import pytest
 from langchain_groq import ChatGroq
 from langchain_openai import ChatOpenAI
 
-
 from switchboard.core.llm import get_llm
+
 
 @pytest.fixture(autouse=True)
 def fake_keys(monkeypatch):
@@ -16,6 +16,7 @@ def test_openai_spec_builds_openai_client():
     llm = get_llm("openai:gpt-4o-mini")
     assert isinstance(llm, ChatOpenAI)
     assert llm.model_name == "gpt-4o-mini"
+
 
 def test_groq_spec_builds_groq_client():
     llm = get_llm("groq:openai/gpt-oss-120b")

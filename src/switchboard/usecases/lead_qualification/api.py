@@ -1,15 +1,14 @@
-import os
 import asyncio
+import hashlib
+import hmac
+import os
 import sqlite3
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
 from uuid import uuid4
-import hashlib
-import hmac
 
 from fastapi import APIRouter, BackgroundTasks, FastAPI, Header, HTTPException, Request
-# from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
 from pydantic import BaseModel
@@ -55,12 +54,17 @@ def _run_out(graph, thread_id: str) -> RunOut:
     if not state.values:
         raise HTTPException(404, f"No run with thread_id {thread_id!r}.")
     if state.interrupts:
-        return RunOut(thread_id=thread_id, status="awaiting_review", score=state.values.get("score"),
-                      planned_writes=state.interrupts[0].value["planned_writes"])
+        return RunOut(
+            thread_id=thread_id,
+            status="awaiting_review",
+            score=state.values.get("score"),
+            planned_writes=state.interrupts[0].value["planned_writes"],
+        )
     if state.next:  # started (e.g. by a webhook) but not paused or finished yet
         return RunOut(thread_id=thread_id, status="running", score=state.values.get("score"))
-    return RunOut(thread_id=thread_id, status="completed", score=state.values.get("score"),
-                  summary=state.values.get("summary"))
+    return RunOut(
+        thread_id=thread_id, status="completed", score=state.values.get("score"), summary=state.values.get("summary")
+    )
 
 
 @router.get("/health")
@@ -90,6 +94,7 @@ def decide(thread_id: str, decision: Decision, request: Request) -> RunOut:
         raise HTTPException(422, "An edit needs tool_calls.")
     graph.invoke(Command(resume=decision.model_dump()), _config(thread_id))
     return _run_out(graph, thread_id)
+
 
 class LeadWebhook(BaseModel):
     event_id: str  # the sender's id for this event; a retry of the same event reuses it
@@ -127,11 +132,13 @@ async def lead_webhook(
     background.add_task(graph.invoke, {"lead_text": lead_text}, _config(thread_id))
     return RunOut(thread_id=thread_id, status="running")
 
+
 def make_checkpointer(path: str) -> SqliteSaver:
     """Paused runs are saved in a SQLite file, so they survive a server restart."""
     # FastAPI runs each request in a worker thread; SqliteSaver locks around its own writes.
     conn = sqlite3.connect(path, check_same_thread=False)
     return SqliteSaver(conn)
+
 
 def _default_graph():
     engine = make_engine(os.getenv("CRM_DATABASE_URL", f"sqlite:///{Path('crm.db').resolve()}"))

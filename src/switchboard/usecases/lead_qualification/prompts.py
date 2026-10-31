@@ -38,4 +38,3 @@ Write a 2-4 sentence summary of this lead for the sales team: who they are, the 
 and the main reason, and exactly what was changed in the CRM (or that nothing was).
 The first-pass score is only a first impression and may be wrong. The decision is what the
 agent did after checking the tools. Only report CRM changes that the tool results confirm."""
-

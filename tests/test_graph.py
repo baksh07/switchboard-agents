@@ -21,9 +21,15 @@ CONFIG = {"configurable": {"thread_id": "test"}}
 
 def make_score(action="pursue"):
     return LeadScore(
-        name="Ada Park", email="ada@initech.example", title="Head of Operations",
-        company_name="Initech", company_domain="initech.example",
-        fit_score=70, intent="medium", reasons=["test"], action=action,
+        name="Ada Park",
+        email="ada@initech.example",
+        title="Head of Operations",
+        company_name="Initech",
+        company_domain="initech.example",
+        fit_score=70,
+        intent="medium",
+        reasons=["test"],
+        action=action,
     )
 
 
@@ -48,12 +54,16 @@ class FakeLLM:
         return AIMessage("Test summary.")
 
 
-LOOKUPS = AIMessage("", tool_calls=[
-    call("lookup_company", {"domain": "initech.example"}, "1"),
-    call("search_contacts", {"query": "ada@initech.example"}, "2"),
-])
-CREATE_ADA = call("create_contact", {"name": "Ada Park", "email": "ada@initech.example",
-                                     "company_domain": "initech.example"}, "3")
+LOOKUPS = AIMessage(
+    "",
+    tool_calls=[
+        call("lookup_company", {"domain": "initech.example"}, "1"),
+        call("search_contacts", {"query": "ada@initech.example"}, "2"),
+    ],
+)
+CREATE_ADA = call(
+    "create_contact", {"name": "Ada Park", "email": "ada@initech.example", "company_domain": "initech.example"}, "3"
+)
 TASK_FOR_ADA = call("create_task", {"contact_email": "ada@initech.example", "description": "Intro call"}, "4")
 
 
@@ -97,10 +107,13 @@ def test_route_with_only_reads_goes_to_tools():
 
 
 def test_route_with_any_write_goes_to_human_review():
-    msg = AIMessage("", tool_calls=[
-        call("search_contacts", {"query": "x"}, "1"),
-        call("create_contact", {"name": "A", "email": "a@b.example"}, "2"),
-    ])
+    msg = AIMessage(
+        "",
+        tool_calls=[
+            call("search_contacts", {"query": "x"}, "1"),
+            call("create_contact", {"name": "A", "email": "a@b.example"}, "2"),
+        ],
+    )
     assert route_after_agent({"messages": [msg]}) == "human_review"
 
 
@@ -167,12 +180,15 @@ def test_route_after_execute(state, expected):
 
 def test_agent_can_add_a_missing_task_in_a_second_reviewed_round(engine):
     """One-call-per-turn models: create the contact first, then the task after seeing the result."""
-    llm = FakeLLM(make_score(), [
-        LOOKUPS,
-        AIMessage("", tool_calls=[CREATE_ADA]),
-        AIMessage("", tool_calls=[TASK_FOR_ADA]),
-        AIMessage("Created Ada and a follow-up task."),
-    ])
+    llm = FakeLLM(
+        make_score(),
+        [
+            LOOKUPS,
+            AIMessage("", tool_calls=[CREATE_ADA]),
+            AIMessage("", tool_calls=[TASK_FOR_ADA]),
+            AIMessage("Created Ada and a follow-up task."),
+        ],
+    )
     tools = {t.name: t for t in make_tools(engine)}
     app = build_graph(llm, list(tools.values()), checkpointer=InMemorySaver())
 
@@ -190,9 +206,10 @@ def test_agent_can_add_a_missing_task_in_a_second_reviewed_round(engine):
 
 def test_write_rounds_are_capped(engine):
     """An agent that keeps asking for writes is stopped after MAX_WRITE_ROUNDS reviewed batches."""
-    endless = [AIMessage("", tool_calls=[call("update_contact", {"email": "ada@initech.example",
-                                                                 "title": f"T{i}"}, f"w{i}")])
-               for i in range(MAX_WRITE_ROUNDS + 2)]
+    endless = [
+        AIMessage("", tool_calls=[call("update_contact", {"email": "ada@initech.example", "title": f"T{i}"}, f"w{i}")])
+        for i in range(MAX_WRITE_ROUNDS + 2)
+    ]
     app = build_graph(FakeLLM(make_score(), endless), make_tools(engine), checkpointer=InMemorySaver())
 
     app.invoke({"lead_text": ADA}, CONFIG)

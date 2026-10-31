@@ -2,9 +2,8 @@
 
 import argparse
 import json
-from uuid import uuid4
 from pathlib import Path
-
+from uuid import uuid4
 
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
@@ -68,8 +67,12 @@ def main() -> None:
     parser.add_argument("--lead", default=None, help="Lead text. Default: run the sample leads.")
     parser.add_argument("--auto-approve", action="store_true", help="Approve every plan without asking.")
     parser.add_argument("--mermaid", action="store_true", help="Print the graph diagram and exit.")
-    parser.add_argument("--tools", choices=["local", "mcp", "mcp-http"], default="local",
-                        help="local: call the tools in-process; mcp: call them through the MCP server.")
+    parser.add_argument(
+        "--tools",
+        choices=["local", "mcp", "mcp-http"],
+        default="local",
+        help="local: call the tools in-process; mcp: call them through the MCP server.",
+    )
     args = parser.parse_args()
 
     engine = make_engine(f"sqlite:///{Path('crm.db').resolve()}")
