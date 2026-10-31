@@ -1,13 +1,15 @@
 # Switchboard
 
+[![CI](https://github.com/baksh07/switchboard-agents/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/baksh07/switchboard-agents/actions/workflows/ci.yml)
+
 **Model-agnostic LangGraph agent stack: swap LLMs in one line, tools over MCP, human approval, evals and tracing built in.**
 
 A switchboard routes connections. Here it routes any model to any tool, with a human operator approving every action that changes data.
 
 The demo use case is **inbound lead qualification against a mock CRM**: an agent reads a sales lead, checks the facts with CRM and enrichment tools, proposes CRM changes, and waits for a human to approve, reject or edit them before anything is written.
 
-> **Status:** work in progress. The agent, tools, provider switching, human-in-the-loop, LangSmith tracing, the eval harness ([results](#eval-results)), the MCP server, the REST API with webhooks and the Docker Compose setup work.
-> CI is next (see [Roadmap](#roadmap)).
+> **Status:** the core is complete: the agent, tools, provider switching, human-in-the-loop, LangSmith tracing, the eval harness ([results](#eval-results)), the MCP server, the REST API with webhooks, Docker Compose and CI.
+> Open items are in the [Roadmap](#roadmap) and [Limitations](#limitations).
 
 ---
 
@@ -392,6 +394,16 @@ uv run pytest
 
 No API keys are needed to run the tests. The evals (above) call real models and are run separately.
 
+**CI:** [GitHub Actions](.github/workflows/ci.yml) runs three jobs in parallel on every push to `main`/`dev` and on every pull request:
+
+| Job | Runs |
+|---|---|
+| `lint` | `ruff check` and `ruff format --check` (settings in `pyproject.toml`) |
+| `test` | `pytest` on a clean Ubuntu machine, with no API keys or secrets |
+| `docker` | `docker build`, so a broken Dockerfile fails the PR |
+
+Dependencies are installed with `uv sync --frozen`, so CI fails if `uv.lock` is out of date instead of silently resolving new versions. The workflow token is read-only. Run the same checks locally with `uv run ruff check && uv run ruff format --check && uv run pytest`.
+
 ---
 
 ## Roadmap
@@ -407,7 +419,7 @@ No API keys are needed to run the tests. The evals (above) call real models and 
 - [x] MCP server for the CRM tools (`--tools local|mcp|mcp-http`)
 - [x] FastAPI: start runs, approve via HTTP, signed webhook receiver, persistent checkpoints
 - [x] Docker Compose: API and MCP tool server as separate containers, shared volume, healthchecks
-- [ ] GitHub Actions CI (lint + tests)
+- [x] GitHub Actions CI: lint, format check, tests and Docker build on every push and pull request
 - [ ] Optional: RAG knowledge-base tool, Amazon Bedrock provider
 
 ## Limitations
