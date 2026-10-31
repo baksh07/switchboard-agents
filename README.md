@@ -11,6 +11,8 @@ The demo use case is **inbound lead qualification against a mock CRM**: an agent
 > **Status:** the core is complete: the agent, tools, provider switching, human-in-the-loop, LangSmith tracing, the eval harness ([results](#eval-results)), the MCP server, the REST API with webhooks, Docker Compose and CI.
 > Open items are in the [Roadmap](#roadmap) and [Limitations](#limitations).
 
+**How it was built:** step by step with Claude Code as a coach. It explained and drafted each component; I typed, ran and debugged the code myself. The README and a few small fixes were edited by Claude Code at my request.
+
 ---
 
 ## What it does
@@ -341,11 +343,24 @@ uv run python -m switchboard.core.evals --models openai:gpt-4o-mini groq:openai/
 
 **What the numbers say**
 
-- **gpt-oss-120b never created a follow-up task.** It makes one tool call per turn (update the contact, *then* add the task), while this graph gives the agent a single write turn per lead. The low full-plan score is therefore mostly a **design limitation of this graph**, surfaced by the eval, not only a model weakness. Fixing it and re-measuring is the next step. (Its one wrong decision: it treated Ada's "just exploring, no rush" as not worth a follow-up.)
+- **gpt-oss-120b never created a follow-up task.** It makes one tool call per turn (update the contact, *then* add the task), while the baseline graph gave the agent a single write turn per lead. The low full-plan score is therefore mostly a **design limitation of this graph**, surfaced by the eval, not only a model weakness. It was fixed and re-measured (see [After the fix](#after-the-fix-follow-up-writes)). (Its one wrong decision: it treated Ada's "just exploring, no rush" as not worth a follow-up.)
 - **gpt-4o-mini plans both writes in one turn**, so it scores higher on full plans. But in all three baseline runs it created the 12-employee Pied Piper as a lead after `lookup_company` had returned the size, which the rules exclude. In this run it also added a follow-up task to a contact it had just disqualified.
 - **Same price per token, 2.4× the cost per lead:** gpt-oss is a reasoning model. It produced about 5× more output tokens (hidden reasoning is billed as output), and its one-call-per-turn style means more agent turns, each re-sending the conversation.
 - \* **The Groq latency mostly measures the free tier's rate limit**, not the model. One lead uses about 4,000-5,000 tokens and the free tier allows 8,000 tokens per minute, so after the first two leads (4.3 s and 6.6 s) every lead waited for retries. Don't read this as "Groq is slower"; single unthrottled calls were faster on Groq in manual tests.
 - With 12 leads, one flipped case moves a score by 8 points, and repeated runs differed by about that much. Only large gaps (like 83% vs 42%) are meaningful.
+
+### After the fix: follow-up writes
+
+The baseline showed that one write turn per lead was the bottleneck. The graph now lets the agent add follow-up writes after an approved batch (`execute -> agent`, capped at 3 write rounds; a rejection still ends the run). Same dataset, 2026-10-29 (raw rows: [`evals/results/follow_up_writes.jsonl`](evals/results/follow_up_writes.jsonl)):
+
+| model | action correct | full plan correct | errors | median latency / lead | avg tokens in / out | cost / lead |
+|---|---|---|---|---|---|---|
+| `openai:gpt-4o-mini` | 92% (11/12) | **92% (11/12)** (was 83%) | 0 | 6.1 s | 4,074 / 288 | $0.00078 |
+| `groq:openai/gpt-oss-120b` | 5/5 completed | **5/5 completed** | 7 | n/a | n/a | n/a |
+
+- **gpt-4o-mini:** full plan 83% -> 92%. The only remaining miss is Pied Piper (see above). A second run on 2026-10-30 gave the same 92% / 92% ([`mcp_local.jsonl`](evals/results/mcp_local.jsonl)).
+- **Cost of the fix:** about +40% cost per lead ($0.00056 -> $0.00078), from the extra agent turn that re-sends the conversation.
+- **gpt-oss-120b: incomplete run.** It got every completed lead fully right (5/5, including the follow-up tasks it never created in the baseline), then the Groq free tier's **daily** token limit stopped the other 7. These 5 are not enough for a percentage; a full re-run is still to do.
 
 ---
 
@@ -415,7 +430,8 @@ Dependencies are installed with `uv sync --frozen`, so CI fails if `uv.lock` is 
 - [x] Human-in-the-loop approval with `interrupt()` (approve / reject / edit)
 - [x] LangSmith tracing
 - [x] Eval harness: accuracy, latency, tokens and cost per model, with a results table
-- [ ] Let the agent make follow-up writes after the first approved plan, then re-run the evals
+- [x] Let the agent make follow-up writes after the first approved plan, then re-run the evals (gpt-4o-mini done; gpt-oss-120b re-run incomplete, see below)
+- [ ] Complete the gpt-oss-120b follow-up-writes re-run (blocked by the Groq free tier's daily token limit)
 - [x] MCP server for the CRM tools (`--tools local|mcp|mcp-http`)
 - [x] FastAPI: start runs, approve via HTTP, signed webhook receiver, persistent checkpoints
 - [x] Docker Compose: API and MCP tool server as separate containers, shared volume, healthchecks
@@ -428,6 +444,6 @@ Dependencies are installed with `uv sync --frozen`, so CI fails if `uv.lock` is 
 - The CLI's checkpointer is in-memory (a terminal session lasts as long as its runs); the API persists checkpoints in SQLite. With several API servers, checkpoints would need a shared database such as Postgres (`PostgresSaver`).
 - Webhook runs are FastAPI background tasks, not a job queue: a run that crashes (e.g. the LLM provider is down) stays `running` and is not retried, and runs in progress are lost on restart. Two deliveries of the same event arriving at the same instant could both start a run, because the duplicate check happens before the first checkpoint is saved. A queue with retries and an atomic "claim this event id" would fix both.
 - The API has no user authentication; anyone who can reach it can approve plans. Only the webhook is protected (by its signature).
-- The agent gets one write plan per lead. If a model proposes only part of its plan (for example, an update without the follow-up task), the rest is not executed. The evals show this costs gpt-oss-120b most of its full-plan score.
+- Follow-up writes are capped at 3 approved write rounds per lead, so a model that needs more rounds stops with an incomplete plan. Each extra round is one more agent turn, which re-sends the conversation and raises the cost per lead (about +40% for gpt-4o-mini).
 - The eval set is small (12 leads) and each model was run once, so results carry noticeable run-to-run variation.
 - Groq results were measured on the free tier, whose rate limit inflates latency.
