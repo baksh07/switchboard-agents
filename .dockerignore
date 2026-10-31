@@ -1,0 +1,12 @@
+.env
+.venv
+.git
+*.db
+*.db-*
+__pycache__
+.pytest_cache
+.ruff_cache
+tests
+evals
+DUMP
+PROJECT_BRIEF.md

@@ -1,12 +1,7 @@
-import sys
-from pathlib import Path
-from typing import Literal
 import os
-
-from switchboard.core.mcp import load_mcp_tools
-
-
+import sys
 from datetime import date, timedelta
+from pathlib import Path
 from typing import Literal
 
 from langchain_core.tools import BaseTool, tool
@@ -14,7 +9,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
-
+from switchboard.core.mcp import load_mcp_tools
 from switchboard.usecases.lead_qualification.db import Company, Contact, Task
 
 WRITE_TOOLS = {"create_contact", "update_contact", "create_task"}
@@ -24,6 +19,7 @@ MOCK_ENRICHMENT = {
     "umbrella.example": {"name": "Umbrella Health", "industry": "Healthcare", "employee_count": 5000},
     "pied-piper.example": {"name": "Pied Piper", "industry": "Software", "employee_count": 12},
 }
+
 
 def _contact_dict(c: Contact) -> dict:
     return {
@@ -40,62 +36,53 @@ def make_tools(engine: Engine) -> list[BaseTool]:
 
     @tool(parse_docstring=True)
     def search_contacts(query: str) -> list[dict]:
-         
-         """Search CRM contacts by exact email, part of a name, or company domain.
+        """Search CRM contacts by exact email, part of a name, or company domain.
 
         Args:
             query: An email address, a name fragment, or a domain like 'acme.example'.
         """
-         q = query.strip().lower()
-         with Session(engine) as s:
-             stmt = (
+        q = query.strip().lower()
+        with Session(engine) as s:
+            stmt = (
                 select(Contact)
                 .outerjoin(Company)
                 .where(
                     or_(
                         func.lower(Contact.email) == q,
                         Contact.name.ilike(f"%{q}%"),
-                        Company.domain ==q,
+                        Company.domain == q,
                     )
                 )
                 .limit(10)
-             )
-             contacts = [_contact_dict(c) for c in s.scalars(stmt)]
-         return {"count" : len(contacts), "contacts": contacts}
+            )
+            contacts = [_contact_dict(c) for c in s.scalars(stmt)]
+        return {"count": len(contacts), "contacts": contacts}
 
     @tool(parse_docstring=True)
-    def lookup_company(domain:str) -> dict:
+    def lookup_company(domain: str) -> dict:
         """
         Get company info for a domain: CRM data and open deals if known otherwise enrichment data
 
         Args:
-            domain: The company's web domain, eg. 'acmerobotics.example'.    
+            domain: The company's web domain, eg. 'acmerobotics.example'.
         """
         domain = domain.strip().lower()
         with Session(engine) as s:
-            company = s.scalar(
-                select(Company)
-                .where(Company.domain == domain)               
-            )
+            company = s.scalar(select(Company).where(Company.domain == domain))
 
             if company:
-                return{
-                    "found" : True,
-                    "source" : "crm",
-                    "name" : company.name,
-                    "industry" : company.industry,
-                    "employee_count" : company.employee_count,
-                    "contact_count" : len(company.contacts),
-                    "open_deals" : [
-                        {
-                            "name" : d.name, "amount" : d.amount
-                        } for d in company.deals if d.stage == "open"
-                    ],
+                return {
+                    "found": True,
+                    "source": "crm",
+                    "name": company.name,
+                    "industry": company.industry,
+                    "employee_count": company.employee_count,
+                    "contact_count": len(company.contacts),
+                    "open_deals": [{"name": d.name, "amount": d.amount} for d in company.deals if d.stage == "open"],
                 }
         if domain in MOCK_ENRICHMENT:
             return {"found": True, "source": "enrichment", **MOCK_ENRICHMENT[domain]}
         return {"found": False, "domain": domain}
-
 
     @tool(parse_docstring=True)
     def create_contact(
@@ -199,9 +186,7 @@ def make_tools(engine: Engine) -> list[BaseTool]:
     return [search_contacts, lookup_company, create_contact, update_contact, create_task]
 
 
-
 MCP_SERVER = Path(__file__).resolve().parents[4] / "mcp_server" / "crm_server.py"
-
 
 
 def load_tools(engine: Engine, mode: Literal["local", "mcp", "mcp-http"] = "local") -> list[BaseTool]:
@@ -213,11 +198,13 @@ def load_tools(engine: Engine, mode: Literal["local", "mcp", "mcp-http"] = "loca
         return load_mcp_tools({"crm": {"transport": "streamable_http", "url": url}})
 
     db_url = engine.url.render_as_string(hide_password=False)
-    return load_mcp_tools({
-        "crm" : {
-            "transport" : "stdio",
-            "command" : sys.executable,
-            "args" : [str(MCP_SERVER)],
-            "env" : {"CRM_DATABASE_URL" : db_url},
+    return load_mcp_tools(
+        {
+            "crm": {
+                "transport": "stdio",
+                "command": sys.executable,
+                "args": [str(MCP_SERVER)],
+                "env": {"CRM_DATABASE_URL": db_url},
+            }
         }
-    })
+    )

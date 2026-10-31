@@ -19,9 +19,7 @@ def tools(tmp_path):
 
 
 def test_search_by_email_finds_existing_contact(tools):
-    result = tools['search_contacts'].invoke({
-        "query": "PRIYA@acmerobotics.example"
-    })
+    result = tools["search_contacts"].invoke({"query": "PRIYA@acmerobotics.example"})
     assert result["count"] == 1
     assert result["contacts"][0]["name"] == "Priya Sharma"
 
@@ -40,6 +38,7 @@ def test_lookup_company_from_crm_includes_open_deals(tools):
     assert result["source"] == "crm"
     assert result["open_deals"] == [{"name": "Acme - 50 seat pilot", "amount": 25_000}]
 
+
 def test_lookup_company_falls_back_to_enrichment(tools):
     result = tools["lookup_company"].invoke({"domain": "initech.example"})
     assert result["source"] == "enrichment"
@@ -52,8 +51,12 @@ def test_lookup_unknown_company(tools):
 
 def test_create_contact_with_new_company(tools):
     result = tools["create_contact"].invoke(
-        {"name": "Ada Park", "email": "ada@initech.example",
-         "company_domain": "initech.example", "company_name": "Initech"}
+        {
+            "name": "Ada Park",
+            "email": "ada@initech.example",
+            "company_domain": "initech.example",
+            "company_name": "Initech",
+        }
     )
     assert result["created"]["company"] == "Initech"
     assert tools["search_contacts"].invoke({"query": "ada@initech.example"})["count"] == 1

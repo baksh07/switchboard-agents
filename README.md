@@ -1,13 +1,15 @@
 # Switchboard
 
+[![CI](https://github.com/baksh07/switchboard-agents/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/baksh07/switchboard-agents/actions/workflows/ci.yml)
+
 **Model-agnostic LangGraph agent stack: swap LLMs in one line, tools over MCP, human approval, evals and tracing built in.**
 
 A switchboard routes connections. Here it routes any model to any tool, with a human operator approving every action that changes data.
 
 The demo use case is **inbound lead qualification against a mock CRM**: an agent reads a sales lead, checks the facts with CRM and enrichment tools, proposes CRM changes, and waits for a human to approve, reject or edit them before anything is written.
 
-> **Status:** work in progress. The agent, tools, provider switching, human-in-the-loop, LangSmith tracing, the eval harness ([results](#eval-results)) and the MCP server work.
-> The REST API, Docker and CI are next (see [Roadmap](#roadmap)).
+> **Status:** the core is complete: the agent, tools, provider switching, human-in-the-loop, LangSmith tracing, the eval harness ([results](#eval-results)), the MCP server, the REST API with webhooks, Docker Compose and CI.
+> Open items are in the [Roadmap](#roadmap) and [Limitations](#limitations).
 
 ---
 
@@ -104,7 +106,8 @@ src/switchboard/
    ├─ prompts.py                 scoring, agent and summary prompts
    ├─ scoring.py                 lead -> LeadScore
    ├─ graph.py                   the StateGraph
-   └─ cli.py                     terminal demo with human approval
+   ├─ cli.py                     terminal demo with human approval
+   └─ api.py                     FastAPI: runs, review decisions, signed webhook
 ```
 
 The rule: **`core/` never imports from a use case.** A second use case adds its own folder (state, tools, prompts, graph) and reuses the core.
@@ -113,7 +116,7 @@ The rule: **`core/` never imports from a use case.** A second use case adds its 
 
 ## Quickstart
 
-Requirements: Python 3.11+ and [uv](https://docs.astral.sh/uv/).
+Requirements: Python 3.11+ and [uv](https://docs.astral.sh/uv/). Or only Docker: see [Running with Docker](#running-with-docker).
 
 ```bash
 git clone https://github.com/baksh07/switchboard-agents.git
@@ -161,6 +164,81 @@ When the agent plans CRM writes, the run pauses:
 | `a` | approve: run the plan as proposed |
 | `r` | reject: write nothing; the summary says a reviewer rejected it |
 | `e` | edit: for each planned call, press Enter to keep it, type `drop` to remove it, or paste new JSON arguments |
+
+---
+
+## REST API
+
+The same agent over HTTP (FastAPI). A run pauses at review **between two requests**: one starts it, another approves it, minutes or days later.
+
+```bash
+uv run uvicorn switchboard.usecases.lead_qualification.api:app
+```
+
+Interactive docs: http://127.0.0.1:8000/docs. Settings come from `.env`: `MODEL`, `TOOLS` (`local`, `mcp` or `mcp-http`), `CHECKPOINT_DB` (default `checkpoints.db`) and `WEBHOOK_SECRET`.
+
+| Endpoint | What it does |
+|---|---|
+| `POST /runs` `{"lead_text": "..."}` | Runs the agent until it needs a review (or finishes). Returns `thread_id`, `status`, `score`, `planned_writes`. |
+| `GET /runs/{thread_id}` | Current status: `running`, `awaiting_review` or `completed` (with `summary`). |
+| `POST /runs/{thread_id}/decision` | `{"action": "approve"}`, `{"action": "reject"}` or `{"action": "edit", "tool_calls": [...]}`. Resumes the run. |
+| `POST /webhooks/lead` | For a form or CRM to push leads (below). |
+| `GET /health` | Liveness check. |
+
+Errors: `404` unknown run, `409` the run is not waiting for a review (e.g. a second approval of the same plan), `422` invalid body.
+
+**Paused runs survive restarts.** The API saves checkpoints to SQLite (`SqliteSaver`), in a file separate from the CRM data: agent state and business data have different lifecycles. A test starts a run, shuts the app down, builds a new one on the same file and approves the run there.
+
+### Webhook
+
+`POST /webhooks/lead` lets a lead source call the agent when a lead arrives, instead of someone starting each run:
+
+```json
+{"event_id": "evt_8f3", "name": "Ada Park", "email": "ada@initech.example", "company": "Initech", "message": "..."}
+```
+
+- **Signed:** the sender puts `X-Signature: sha256=<HMAC-SHA256 of the raw body with WEBHOOK_SECRET>` in the header. A missing or wrong signature gets `401`, and with no `WEBHOOK_SECRET` set the endpoint is disabled (`503`) rather than open.
+- **Answers at once:** `202 Accepted` with `status: "running"`; the agent runs as a background task after the response, so senders with short timeouts don't retry.
+- **Idempotent:** the run's `thread_id` is `webhook-<event_id>`, so a retried delivery of the same event returns the existing run instead of starting a second one.
+- The webhook only **starts** runs. CRM writes still wait for a decision via `/runs/{thread_id}/decision`.
+
+Two endpoint styles on purpose: `def` endpoints run the (blocking) agent in FastAPI's thread pool, so one slow run does not block the server; the webhook is `async def` because it needs the raw body for the signature and does no slow work itself.
+
+---
+
+## Running with Docker
+
+```bash
+docker compose up --build
+```
+
+The API is then at http://127.0.0.1:8001/docs. Compose runs two containers from one image:
+
+```mermaid
+graph LR
+    you([Your machine]) -->|"localhost:8001"| api
+    subgraph compose ["Compose network (private)"]
+        api["api<br/>FastAPI + agent"] -->|"MCP over HTTP<br/>http://mcp:8000/mcp"| mcp["mcp<br/>CRM tool server"]
+        api --- data[("volume: data<br/>crm.db, checkpoints.db")]
+        mcp --- data
+    end
+```
+
+| Service | Runs | Reachable from |
+|---|---|---|
+| `api` | uvicorn with the FastAPI app, `TOOLS=mcp-http` | your machine, port 8001 |
+| `mcp` | `crm_server.py http` | only the `api` container (no published port) |
+
+- **The tool server is not exposed.** It has no authentication and can write to the CRM, so only the API, on the private Compose network, can reach it.
+- **Data survives restarts.** Both containers mount the named volume `data` at `/data`: they share one `crm.db`, and paused runs in `checkpoints.db` survive `docker compose down` / `up`. `docker compose down -v` deletes the volume.
+- **Startup order is checked, not assumed.** The API loads its tools from the MCP server at startup, so it waits for the `mcp` healthcheck to pass (`depends_on: condition: service_healthy`), not just for the container to start.
+- **No secrets in the image.** API keys come from `.env` at run time (`env_file`); `.dockerignore` keeps `.env`, the databases and the local virtualenv out of the build.
+
+The [`Dockerfile`](Dockerfile) installs dependencies with `uv sync --frozen` from `uv.lock`, in a separate layer from the source code, so code changes rebuild in seconds. The app runs as a non-root user that can write only to `/data`.
+
+**Two bugs that only appeared in containers:**
+- **`asyncio.run()` cannot be called from a running event loop.** The MCP tool loader is synchronous and uses `asyncio.run`. Locally the API used in-process tools, so startup never reached it; in Compose (`TOOLS=mcp-http`) it ran inside FastAPI's async `lifespan`. The graph is now built in a worker thread (`asyncio.to_thread`).
+- **`421 Misdirected Request` from the MCP server.** Created with host `127.0.0.1`, FastMCP enables DNS-rebinding protection and accepts only `localhost` Host headers, but the API calls it as `mcp:8000`. The host must be passed when the server is created (`MCP_HOST=0.0.0.0` in Compose), not changed afterwards.
 
 ---
 
@@ -312,8 +390,19 @@ uv run pytest
 - **Graph:** routing rules, plus full runs with a scripted fake LLM: the graph pauses *before* any write, and approve, reject and edit each produce the right CRM state.
 - **Eval harness:** scoring, error handling and the cost/latency maths, using a fake use case (proves the harness has no lead-specific code).
 - **MCP:** starts the real server as a subprocess and checks it exposes the same tools and schemas as the local ones, that a write then read works through it, and that both kinds of error (a tool's own error and an argument validation error) come back as text.
+- **API:** every endpoint through FastAPI's `TestClient` with the fake LLM: the run pauses before writing, approve and reject, error codes (404, 409 on a double approval, 422), a paused run surviving an app restart, and the webhook's signature check, background run and duplicate-delivery handling.
 
 No API keys are needed to run the tests. The evals (above) call real models and are run separately.
+
+**CI:** [GitHub Actions](.github/workflows/ci.yml) runs three jobs in parallel on every push to `main`/`dev` and on every pull request:
+
+| Job | Runs |
+|---|---|
+| `lint` | `ruff check` and `ruff format --check` (settings in `pyproject.toml`) |
+| `test` | `pytest` on a clean Ubuntu machine, with no API keys or secrets |
+| `docker` | `docker build`, so a broken Dockerfile fails the PR |
+
+Dependencies are installed with `uv sync --frozen`, so CI fails if `uv.lock` is out of date instead of silently resolving new versions. The workflow token is read-only. Run the same checks locally with `uv run ruff check && uv run ruff format --check && uv run pytest`.
 
 ---
 
@@ -328,15 +417,17 @@ No API keys are needed to run the tests. The evals (above) call real models and 
 - [x] Eval harness: accuracy, latency, tokens and cost per model, with a results table
 - [ ] Let the agent make follow-up writes after the first approved plan, then re-run the evals
 - [x] MCP server for the CRM tools (`--tools local|mcp|mcp-http`)
-- [ ] FastAPI: start runs, approve via HTTP, webhook receiver
-- [ ] Docker Compose
-- [ ] GitHub Actions CI (lint + tests)
+- [x] FastAPI: start runs, approve via HTTP, signed webhook receiver, persistent checkpoints
+- [x] Docker Compose: API and MCP tool server as separate containers, shared volume, healthchecks
+- [x] GitHub Actions CI: lint, format check, tests and Docker build on every push and pull request
 - [ ] Optional: RAG knowledge-base tool, Amazon Bedrock provider
 
 ## Limitations
 
 - The CRM and the company enrichment are mocks with fake `.example` data.
-- The checkpointer is in-memory, so a paused run is lost when the process exits. A persistent checkpointer comes with the API.
+- The CLI's checkpointer is in-memory (a terminal session lasts as long as its runs); the API persists checkpoints in SQLite. With several API servers, checkpoints would need a shared database such as Postgres (`PostgresSaver`).
+- Webhook runs are FastAPI background tasks, not a job queue: a run that crashes (e.g. the LLM provider is down) stays `running` and is not retried, and runs in progress are lost on restart. Two deliveries of the same event arriving at the same instant could both start a run, because the duplicate check happens before the first checkpoint is saved. A queue with retries and an atomic "claim this event id" would fix both.
+- The API has no user authentication; anyone who can reach it can approve plans. Only the webhook is protected (by its signature).
 - The agent gets one write plan per lead. If a model proposes only part of its plan (for example, an update without the follow-up task), the rest is not executed. The evals show this costs gpt-oss-120b most of its full-plan score.
 - The eval set is small (12 leads) and each model was run once, so results carry noticeable run-to-run variation.
 - Groq results were measured on the free tier, whose rate limit inflates latency.

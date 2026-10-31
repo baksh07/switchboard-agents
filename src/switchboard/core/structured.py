@@ -1,15 +1,17 @@
 from typing import TypeVar
+
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import BaseMessage, HumanMessage
 from pydantic import BaseModel
 
-
 T = TypeVar("T", bound=BaseModel)
+
 
 class StructuredOutputError(Exception):
     """
     The model didnot return valide data for the schema even after retrying
     """
+
 
 def invoke_structured(
     llm: BaseChatModel,

@@ -2,12 +2,12 @@
 Data types for the lead_qualification use case
 """
 
-
 from typing import Annotated, Literal, TypedDict
 
 from langchain_core.messages import AnyMessage
 from langgraph.graph.message import add_messages
 from pydantic import BaseModel, Field
+
 
 class LeadScore(BaseModel):
     """Facts extracted from an inbound lead, plus a first-pass qualification verdict."""
@@ -25,11 +25,11 @@ class LeadScore(BaseModel):
     action: Literal["pursue", "reject"] = Field(description="pursue = worth a sales follow-up, reject = not a fit.")
 
 
-
-class LeadState(TypedDict, total = False):
+class LeadState(TypedDict, total=False):
     """
     Everything the graph knows about one lead as it moves through the nodes.
     """
+
     lead_text: str
     score: dict
     messages: Annotated[list[AnyMessage], add_messages]

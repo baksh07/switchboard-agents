@@ -74,30 +74,36 @@ def seed(session: Session) -> None:
         return
 
     acme = Company(
-        name="Acme Robotics", domain="acmerobotics.example",
-        industry="Manufacturing", employee_count=450,
+        name="Acme Robotics",
+        domain="acmerobotics.example",
+        industry="Manufacturing",
+        employee_count=450,
     )
     globex = Company(
-        name="Globex Logistics", domain="globex.example",
-        industry="Logistics", employee_count=1200,
+        name="Globex Logistics",
+        domain="globex.example",
+        industry="Logistics",
+        employee_count=1200,
     )
     tinyco = Company(
-        name="TinyCo Studio", domain="tinyco.example",
-        industry="Design", employee_count=4,
+        name="TinyCo Studio",
+        domain="tinyco.example",
+        industry="Design",
+        employee_count=4,
     )
 
     priya = Contact(
-        name="Priya Sharma", email="priya@acmerobotics.example",
-        title="CTO", company=acme, status="qualified",
+        name="Priya Sharma",
+        email="priya@acmerobotics.example",
+        title="CTO",
+        company=acme,
+        status="qualified",
     )
     contacts = [
         priya,
-        Contact(name="Jonas Weber", email="jonas@acmerobotics.example",
-                title="IT Manager", company=acme),
-        Contact(name="Mei Lin", email="mei.lin@globex.example",
-                title="Head of Operations", company=globex),
-        Contact(name="Sam Ortiz", email="sam@tinyco.example",
-                title="Founder", company=tinyco, status="disqualified"),
+        Contact(name="Jonas Weber", email="jonas@acmerobotics.example", title="IT Manager", company=acme),
+        Contact(name="Mei Lin", email="mei.lin@globex.example", title="Head of Operations", company=globex),
+        Contact(name="Sam Ortiz", email="sam@tinyco.example", title="Founder", company=tinyco, status="disqualified"),
     ]
 
     deals = [
@@ -106,8 +112,7 @@ def seed(session: Session) -> None:
     ]
 
     tasks = [
-        Task(description="Send Acme pilot proposal", contact=priya,
-             due_date=date(2026, 11, 15)),
+        Task(description="Send Acme pilot proposal", contact=priya, due_date=date(2026, 11, 15)),
     ]
 
     session.add_all([acme, globex, tinyco, *contacts, *deals, *tasks])

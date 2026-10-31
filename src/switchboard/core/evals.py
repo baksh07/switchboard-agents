@@ -66,22 +66,24 @@ def run_eval(
             try:
                 outcome = usecase.run_example(llm, example, config, tools=tools)
                 scores, error = usecase.score(example, outcome), None
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - one failing example must not stop the whole eval
                 outcome, scores, error = {}, {}, f"{type(exc).__name__}: {exc}"
             latency = time.perf_counter() - start
             input_tokens, output_tokens = token_totals(usage)
 
-            rows.append({
-                "model": model,
-                "id": example["id"],
-                "scores": scores,
-                "latency_s": latency,
-                "input_tokens": input_tokens,
-                "output_tokens": output_tokens,
-                "cost_usd": cost_usd(model, input_tokens, output_tokens),
-                "outcome": outcome,
-                "error": error,
-            })
+            rows.append(
+                {
+                    "model": model,
+                    "id": example["id"],
+                    "scores": scores,
+                    "latency_s": latency,
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "cost_usd": cost_usd(model, input_tokens, output_tokens),
+                    "outcome": outcome,
+                    "error": error,
+                }
+            )
             status = error or " ".join(f"{k}={'ok' if v else 'FAIL'}" for k, v in scores.items())
             print(f"[{model}] {example['id']}: {status}  ({latency:.1f}s, {input_tokens}+{output_tokens} tokens)")
     return rows
@@ -131,7 +133,7 @@ def print_table(summary: dict[str, dict]) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run a use case's eval dataset across models.")
     parser.add_argument("--usecase", default="lead_qualification")
-    parser.add_argument("--models", nargs="+", required=True, help='e.g. openai:gpt-4o-mini groq:openai/gpt-oss-120b')
+    parser.add_argument("--models", nargs="+", required=True, help="e.g. openai:gpt-4o-mini groq:openai/gpt-oss-120b")
     parser.add_argument("--dataset", type=Path, default=None, help="Default: evals/datasets/<usecase>.jsonl")
     parser.add_argument("--out", type=Path, default=None, help="Write every row (with outcomes) to this JSONL file.")
     parser.add_argument("--tools", choices=["local", "mcp"], default="local", help="Call tools in-process or via MCP.")
