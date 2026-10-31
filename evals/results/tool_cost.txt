@@ -1,0 +1,16 @@
+Tool definitions: 394 input tokens per agent call
+
+priya_existing_fit: 3 agent calls, 1,182 of 4,430 input tokens are tool definitions (27%)
+jonas_existing_fit: 3 agent calls, 1,182 of 4,390 input tokens are tool definitions (27%)
+mei_existing_fit: 3 agent calls, 1,182 of 4,226 input tokens are tool definitions (28%)
+sam_existing_not_fit: 3 agent calls, 1,182 of 3,646 input tokens are tool definitions (32%)
+ada_new_fit: 3 agent calls, 1,182 of 4,074 input tokens are tool definitions (29%)
+umbrella_new_fit: 3 agent calls, 1,182 of 4,189 input tokens are tool definitions (28%)
+globex_new_contact: 4 agent calls, 1,576 of 5,594 input tokens are tool definitions (28%)
+hooli_unknown_company: 3 agent calls, 1,182 of 4,120 input tokens are tool definitions (29%)
+pied_piper_too_small: 4 agent calls, 1,576 of 4,962 input tokens are tool definitions (32%)
+student: 1 agent calls, 394 of 1,576 input tokens are tool definitions (25%)
+job_seeker: 1 agent calls, 394 of 1,596 input tokens are tool definitions (25%)
+vendor_pitch: 3 agent calls, 1,182 of 3,484 input tokens are tool definitions (34%)
+
+Median share: 28%

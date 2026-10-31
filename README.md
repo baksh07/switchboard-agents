@@ -318,6 +318,22 @@ The same lead failed in both runs (Pied Piper, see below), so the model sees the
 - **MCP returns text, not Python objects.** Tool results arrive as JSON strings, so `execute` only JSON-encodes results that are not strings already.
 - **Debugging stdio servers:** if the server crashes on startup, the client only reports `McpError: Connection closed`. Run `uv run python mcp_server/crm_server.py` directly to see the real traceback (it should just wait for input).
 
+### How much context do the tool definitions cost?
+
+Every agent call re-sends all tool definitions to the model, which is the cost that approaches like Cloudflare's [Code Mode](https://blog.cloudflare.com/code-mode) and Anthropic's [code execution with MCP](https://www.anthropic.com/engineering/code-execution-with-mcp) try to avoid at scale. Measured for this agent:
+
+```bash
+uv run python -m switchboard.usecases.lead_qualification.tool_cost --model openai:gpt-4o-mini
+```
+
+It sends the same prompt with and without the tools bound (the difference is what the definitions cost, counted by the provider itself), then runs the 12 eval leads and counts agent calls per lead. Result on 2026-10-31 ([`tool_cost.txt`](evals/results/tool_cost.txt)):
+
+- The 5 tool definitions cost **394 input tokens per agent call** (about 80 per tool).
+- A lead needs 1-4 agent calls, so tool definitions are **28% of all input tokens per lead** (median; range 25-34%).
+- At about 80 tokens per tool, 500 tools would add roughly 39,000 tokens to every call (a linear estimate; real tools vary).
+
+At 5 tools, plain tool calling stays the better fit here: the overhead is small in absolute terms, and every CRM write is shown to a human reviewer as one readable call (`create_contact(...)`) rather than as generated code that would need a sandbox and a code review.
+
 ---
 
 ## Eval results

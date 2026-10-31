@@ -42,11 +42,13 @@ def run_example(llm: BaseChatModel, example: dict, config: dict, tools: str = "l
             planned += interrupts[0].value["planned_writes"]
             app.invoke(Command(resume={"action": "approve"}), config)
 
-        summary = app.get_state(config).values.get("summary", "")
+        values = app.get_state(config).values
+        summary = values.get("summary", "")
+        agent_calls = sum(m.type == "ai" for m in values["messages"])  # one AI message per agent turn
         engine.dispose()  # release the SQLite file so Windows can delete the temp dir
 
     writes = [{"name": w["name"], "args": w["args"]} for w in planned]
-    return {"writes": writes, **classify_writes(writes), "summary": summary}
+    return {"writes": writes, **classify_writes(writes), "summary": summary, "agent_calls": agent_calls}
 
 
 def score(example: dict, outcome: dict) -> dict[str, bool]:
